@@ -1,0 +1,19 @@
+{
+    "repoName": "fpp-live-follow",
+    "name": "Animatronic Live Follow",
+    "version": "1.0.0",
+    "author": "pgianotto",
+    "description": "Face-tracking servo control for animatronics. Keeps a detected face centered in frame using pan/tilt servos. Supports always-on, show-triggered, FPP command, and motion-sensor trigger modes.",
+    "homeURL": "https://github.com/pgianotto/fpp-live-follow",
+    "srcURL": "https://github.com/pgianotto/fpp-live-follow.git",
+    "bugURL": "https://github.com/pgianotto/fpp-live-follow/issues",
+    "allowUpdates": 1,
+    "versions": [
+        {
+            "minFPPVersion": "6.0",
+            "maxFPPVersion": "0",
+            "branch": "master",
+            "sha": ""
+        }
+    ]
+}
