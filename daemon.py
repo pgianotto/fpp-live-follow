@@ -59,14 +59,14 @@ DEFAULTS = {
     'servo_pan_min':       0,
     'servo_pan_max':       180,
     'servo_pan_center':    90,
-    'servo_pan_speed':     120,   # degrees/sec
+    'servo_pan_speed':     200,   # degrees/sec at frame edge
     'servo_pan_invert':    False,
     'servo_tilt_min':      30,
     'servo_tilt_max':      150,
     'servo_tilt_center':   90,
-    'servo_tilt_speed':    90,    # degrees/sec
+    'servo_tilt_speed':    150,   # degrees/sec at frame edge
     'servo_tilt_invert':   False,
-    'face_smoothing':      0.25,
+    'face_smoothing':      0.6,   # higher = more responsive, lower = smoother
     'deadzone_px':         25,
     'tracking_mode':       'face',   # face | body | face_or_body
 }
