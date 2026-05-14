@@ -78,14 +78,27 @@ if (file_exists($co_other_path)) {
   <div id="status-msg"></div>
 </div>
 
+<!-- Camera unavailable card -->
+<div class="af-card" id="cam-ownership-card" style="display:none;">
+  <h3>Camera Unavailable</h3>
+  <p style="color:#888; font-size:12px; margin-bottom:12px;">
+    The camera may be held by the Performance Capture plugin.
+    Click <strong>Claim Camera</strong> to release it and resume tracking.
+  </p>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <button class="af-btn btn-start" onclick="claimCamera()">▶ Claim Camera</button>
+    <span id="cam-claim-msg" style="font-size:12px;"></span>
+  </div>
+</div>
+
 <!-- Camera feed -->
-<div class="af-card">
+<div class="af-card" id="cam-feed-card">
   <h3>Camera Feed</h3>
   <img src="/fpp-live-follow-api/stream"
        class="af-stream" id="cam-stream"
-       onerror="this.style.display='none'; document.getElementById('cam-error').style.display='block'">
+       onerror="onCamError()">
   <div id="cam-error" style="display:none; color:#e63946; font-size:13px; padding:8px 0;">
-    Camera stream unavailable — check daemon status.
+    Camera stream unavailable.
   </div>
 </div>
 
@@ -295,6 +308,44 @@ function saveConfig() {
   });
 }
 
+function onCamError() {
+  document.getElementById('cam-stream').style.display = 'none';
+  document.getElementById('cam-error').style.display  = 'block';
+  document.getElementById('cam-ownership-card').style.display = '';
+}
+
+function claimCamera() {
+  const msg = document.getElementById('cam-claim-msg');
+  msg.style.color = '#888';
+  msg.textContent = 'Releasing from Performance Capture…';
+  // Swallow capture errors — if it's not running the camera is already free
+  fetch('/fpp-capture-api/api/camera/release', {method: 'POST'})
+    .catch(() => null)
+    .then(() => {
+      msg.textContent = 'Claiming camera…';
+      return fetch(API + '/api/camera/restore', {method: 'POST'});
+    })
+    .then(r => r.json())
+    .then(d => {
+      if (d.cam_running) {
+        msg.style.color = '#06d6a0';
+        msg.textContent = '✓ Camera claimed';
+        document.getElementById('cam-ownership-card').style.display = 'none';
+        const img = document.getElementById('cam-stream');
+        img.style.display = '';
+        document.getElementById('cam-error').style.display = 'none';
+        img.src = '/fpp-live-follow-api/stream?' + Date.now();
+      } else {
+        msg.style.color = '#e63946';
+        msg.textContent = '✗ Camera still unavailable — try again';
+      }
+    })
+    .catch(() => {
+      msg.style.color = '#e63946';
+      msg.textContent = '✗ Could not reach Live Follow daemon';
+    });
+}
+
 function pollStatus() {
   fetch(API + '/api/status')
     .then(r => r.json())
@@ -308,6 +359,9 @@ function pollStatus() {
       document.getElementById('val-pan').textContent        = s.pan.toFixed(1)  + '°';
       document.getElementById('val-tilt').textContent       = s.tilt.toFixed(1) + '°';
       document.getElementById('val-mode').textContent       = s.trigger_mode;
+      if (s.cam_running === false) {
+        document.getElementById('cam-ownership-card').style.display = '';
+      }
     })
     .catch(() => {});
 }

@@ -270,6 +270,7 @@ class LiveFollowDaemon:
             'tilt':          self._servos.get_angle('tilt') if self._servos else 90,
             'head_yaw':      float(r.head_yaw)   if r else 0.0,
             'head_pitch':    float(r.head_pitch) if r else 0.0,
+            'cam_running':   self._cam_running,
         }
 
     # ── MJPEG stream ─────────────────────────────────────────────────────────
