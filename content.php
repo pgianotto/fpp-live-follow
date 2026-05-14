@@ -10,6 +10,22 @@ $tracking     = $status['tracking']     ?? false;
 $face         = $status['face_detected'] ?? false;
 $trigger_mode = $cfg['trigger_mode']    ?? 'always_on';
 $hw_type      = $cfg['hardware_type']   ?? 'mock';
+
+// Build servo channel list from FPP's co-other.json (same source as servo calibrator)
+$servo_ports = [];   // [['value'=>port_idx, 'label'=>'Port 0 — Pan', 'out'=>out_idx], ...]
+$co_other_path = '/home/fpp/media/config/co-other.json';
+if (file_exists($co_other_path)) {
+    $co = @json_decode(file_get_contents($co_other_path), true) ?? [];
+    foreach ($co['channelOutputs'] ?? [] as $out_idx => $out) {
+        if (empty($out['ports'])) continue;
+        $prefix = count($co['channelOutputs']) > 1 ? "Out$out_idx · " : '';
+        foreach ($out['ports'] as $port_idx => $port) {
+            $desc  = trim($port['description'] ?? '');
+            $label = $prefix . "Port $port_idx" . ($desc !== '' ? " — $desc" : '');
+            $servo_ports[] = ['value' => $port_idx, 'label' => $label, 'out' => $out_idx];
+        }
+    }
+}
 ?>
 
 <style>
@@ -174,10 +190,33 @@ $hw_type      = $cfg['hardware_type']   ?? 'mock';
            value="<?= (int)($cfg['pca9685_frequency'] ?? 50) ?>">
   </div>
   <div class="af-row">
-    <span class="af-label">Pan HW Channel</span>
-    <input class="af-input" id="cfg-channel_pan"  type="number" value="<?= (int)($cfg['channel_pan']  ?? 0) ?>">
-    <span class="af-label" style="width:auto; margin-left:16px;">Tilt HW Channel</span>
+    <span class="af-label">Pan Channel</span>
+    <?php if ($servo_ports): ?>
+    <select class="af-select" id="cfg-channel_pan">
+      <?php foreach ($servo_ports as $p):
+        $sel = ((int)($cfg['channel_pan'] ?? 0) === (int)$p['value']) ? 'selected' : '';
+      ?>
+        <option value="<?= (int)$p['value'] ?>" <?= $sel ?>><?= htmlspecialchars($p['label']) ?></option>
+      <?php endforeach; ?>
+    </select>
+    <?php else: ?>
+    <input class="af-input" id="cfg-channel_pan" type="number" value="<?= (int)($cfg['channel_pan'] ?? 0) ?>">
+    <span style="color:#888; font-size:11px; margin-left:8px;">No servo outputs in co-other.json</span>
+    <?php endif; ?>
+  </div>
+  <div class="af-row">
+    <span class="af-label">Tilt Channel</span>
+    <?php if ($servo_ports): ?>
+    <select class="af-select" id="cfg-channel_tilt">
+      <?php foreach ($servo_ports as $p):
+        $sel = ((int)($cfg['channel_tilt'] ?? 1) === (int)$p['value']) ? 'selected' : '';
+      ?>
+        <option value="<?= (int)$p['value'] ?>" <?= $sel ?>><?= htmlspecialchars($p['label']) ?></option>
+      <?php endforeach; ?>
+    </select>
+    <?php else: ?>
     <input class="af-input" id="cfg-channel_tilt" type="number" value="<?= (int)($cfg['channel_tilt'] ?? 1) ?>">
+    <?php endif; ?>
   </div>
   <div style="margin-top:8px;">
     <button class="af-btn btn-save" onclick="saveConfig()">Save &amp; Apply</button>
