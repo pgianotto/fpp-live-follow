@@ -131,24 +131,34 @@ if (file_exists($co_other_path)) {
     </tr>
     <?php
     $servo_fields = [
-      ['Min Angle',    'servo_%s_min'],
-      ['Max Angle',    'servo_%s_max'],
-      ['Center',       'servo_%s_center'],
-      ['Speed (°/fr)', 'servo_%s_speed'],
+      ['Min Angle',     'servo_%s_min',    'number', '0.5'],
+      ['Max Angle',     'servo_%s_max',    'number', '0.5'],
+      ['Center',        'servo_%s_center', 'number', '0.5'],
+      ['Speed (°/sec)', 'servo_%s_speed',  'number', '1'],
     ];
-    foreach ($servo_fields as [$label, $key_pat]):
+    foreach ($servo_fields as [$label, $key_pat, $type, $step]):
     ?>
     <tr>
       <td style="color:#888; padding:4px 12px 4px 0;"><?= $label ?></td>
       <?php foreach (['pan', 'tilt'] as $s): ?>
       <td style="padding:4px 12px;">
         <input class="af-input" id="cfg-<?= sprintf($key_pat, $s) ?>"
-               type="number" step="0.5"
+               type="<?= $type ?>" step="<?= $step ?>"
                value="<?= $cfg[sprintf($key_pat, $s)] ?? '' ?>">
       </td>
       <?php endforeach; ?>
     </tr>
     <?php endforeach; ?>
+    <tr>
+      <td style="color:#888; padding:4px 12px 4px 0;">Invert Direction</td>
+      <?php foreach (['pan', 'tilt'] as $s): ?>
+      <td style="padding:4px 12px;">
+        <input type="checkbox" id="cfg-servo_<?= $s ?>_invert"
+               <?= !empty($cfg["servo_{$s}_invert"]) ? 'checked' : '' ?>
+               style="width:18px; height:18px; accent-color:#4cc9f0; cursor:pointer;">
+      </td>
+      <?php endforeach; ?>
+    </tr>
     <tr>
       <td style="color:#888; padding:4px 12px 4px 0;">Face Smoothing</td>
       <td colspan="2" style="padding:4px 12px;">
@@ -181,13 +191,19 @@ if (file_exists($co_other_path)) {
       <?php endforeach; ?>
     </select>
   </div>
-  <div class="af-row">
-    <span class="af-label">PCA9685 Address</span>
+  <div class="af-row" id="row-i2c">
+    <span class="af-label">I2C Address</span>
     <input class="af-input" id="cfg-pca9685_address" style="width:90px"
            value="<?= htmlspecialchars($cfg['pca9685_address'] ?? '0x40') ?>">
-    <span class="af-label" style="width:auto; margin-left:16px;">Frequency (Hz)</span>
+    <span class="af-label" style="width:auto; margin-left:16px;">I2C Bus</span>
+    <input class="af-input" id="cfg-pca9685_i2c_bus" type="number" style="width:60px"
+           value="<?= (int)($cfg['pca9685_i2c_bus'] ?? 1) ?>">
+  </div>
+  <div class="af-row" id="row-freq" style="<?= in_array($hw_type, ['smbus2','gpio','serial','mock']) ? 'display:none' : '' ?>">
+    <span class="af-label">Frequency (Hz)</span>
     <input class="af-input" id="cfg-pca9685_frequency" type="number"
            value="<?= (int)($cfg['pca9685_frequency'] ?? 50) ?>">
+    <span style="color:#888; font-size:11px; margin-left:8px;">pca9685 backend only — smbus2 reads this from device</span>
   </div>
   <div class="af-row">
     <span class="af-label">Pan Channel</span>
@@ -237,16 +253,18 @@ function sendCmd(endpoint) {
 function saveConfig() {
   const fields = [
     'trigger_mode','motion_sensor_pin','motion_timeout_sec',
-    'hardware_type','pca9685_address','pca9685_frequency',
+    'hardware_type','pca9685_address','pca9685_i2c_bus','pca9685_frequency',
     'channel_pan','channel_tilt',
-    'servo_pan_min','servo_pan_max','servo_pan_center','servo_pan_speed',
-    'servo_tilt_min','servo_tilt_max','servo_tilt_center','servo_tilt_speed',
+    'servo_pan_min','servo_pan_max','servo_pan_center','servo_pan_speed','servo_pan_invert',
+    'servo_tilt_min','servo_tilt_max','servo_tilt_center','servo_tilt_speed','servo_tilt_invert',
     'face_smoothing','deadzone_px',
   ];
   const payload = {};
   fields.forEach(f => {
     const el = document.getElementById('cfg-' + f);
-    if (el) payload[f] = isNaN(el.value) ? el.value : Number(el.value);
+    if (!el) return;
+    if (el.type === 'checkbox') payload[f] = el.checked;
+    else payload[f] = isNaN(el.value) ? el.value : Number(el.value);
   });
   fetch(API + '/api/config', {
     method:'POST',
@@ -280,6 +298,12 @@ function pollStatus() {
 document.getElementById('cfg-trigger').addEventListener('change', function() {
   document.getElementById('row-motion').style.display =
     this.value === 'motion_sensor' ? '' : 'none';
+});
+
+// Show frequency row only for pca9685 (Adafruit) backend
+document.getElementById('cfg-hardware_type').addEventListener('change', function() {
+  document.getElementById('row-freq').style.display =
+    this.value === 'pca9685' ? '' : 'none';
 });
 
 // Poll status every 2 seconds
