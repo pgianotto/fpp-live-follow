@@ -160,7 +160,7 @@ $hw_type      = $cfg['hardware_type']   ?? 'mock';
   <div class="af-row">
     <span class="af-label">Backend Type</span>
     <select class="af-select" id="cfg-hardware_type">
-      <?php foreach (['pca9685','gpio','serial','mock'] as $t): ?>
+      <?php foreach (['smbus2','pca9685','gpio','serial','mock'] as $t): ?>
         <option value="<?= $t ?>" <?= ($hw_type === $t) ? 'selected' : '' ?>><?= $t ?></option>
       <?php endforeach; ?>
     </select>

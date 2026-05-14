@@ -50,7 +50,7 @@ DEFAULTS = {
     'camera_index':        0,
     'camera_width':        640,
     'camera_height':       480,
-    'hardware_type':       'pca9685',
+    'hardware_type':       'smbus2',
     'pca9685_address':     '0x40',
     'pca9685_frequency':   50,
     'channel_pan':         0,
