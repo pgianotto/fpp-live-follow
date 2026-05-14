@@ -8,6 +8,7 @@ $cfg    = @json_decode(file_get_contents("$DAEMON/api/config"),  true) ?? [];
 
 $tracking     = $status['tracking']     ?? false;
 $face         = $status['face_detected'] ?? false;
+$cam_running  = $status['cam_running']  ?? true;   // default true; false = camera taken by another plugin
 $trigger_mode = $cfg['trigger_mode']    ?? 'always_on';
 $hw_type      = $cfg['hardware_type']   ?? 'mock';
 
@@ -79,7 +80,7 @@ if (file_exists($co_other_path)) {
 </div>
 
 <!-- Camera unavailable card -->
-<div class="af-card" id="cam-ownership-card" style="display:none;">
+<div class="af-card" id="cam-ownership-card" style="<?= $cam_running ? 'display:none' : '' ?>">
   <h3>Camera Unavailable</h3>
   <p style="color:#888; font-size:12px; margin-bottom:12px;">
     The camera may be held by the Performance Capture plugin.
