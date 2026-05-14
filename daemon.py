@@ -68,6 +68,7 @@ DEFAULTS = {
     'servo_tilt_invert':   False,
     'face_smoothing':      0.25,
     'deadzone_px':         25,
+    'tracking_mode':       'face',   # face | body | face_or_body
 }
 
 def _load_cfg() -> dict:
@@ -132,6 +133,7 @@ def _build_tracking_config(cfg: dict) -> dict:
         'live_tracking': {
             'deadzone_px':   cfg['deadzone_px'],
             'face_smoothing': cfg.get('face_smoothing', 0.25),
+            'tracking_mode':  cfg.get('tracking_mode', 'face'),
         },
     }
 

@@ -123,6 +123,23 @@ if (file_exists($co_other_path)) {
 <!-- Servo & Tracking config -->
 <div class="af-card">
   <h3>Servo &amp; Tracking</h3>
+  <div class="af-row" style="margin-bottom:12px;">
+    <span class="af-label">Track Mode</span>
+    <select class="af-select" id="cfg-tracking_mode">
+      <?php
+      $track_modes = [
+        'face'        => 'Face — track detected face',
+        'body'        => 'Body — track full body (nose position)',
+        'face_or_body'=> 'Face or Body — face first, fall back to body',
+      ];
+      $cur_mode = $cfg['tracking_mode'] ?? 'face';
+      foreach ($track_modes as $val => $label):
+        $sel = ($cur_mode === $val) ? 'selected' : '';
+      ?>
+        <option value="<?= $val ?>" <?= $sel ?>><?= htmlspecialchars($label) ?></option>
+      <?php endforeach; ?>
+    </select>
+  </div>
   <table style="border-collapse:collapse; font-size:13px; color:#e0e0e0;">
     <tr style="color:#888; font-size:11px;">
       <td style="padding:4px 12px 4px 0;"></td>
@@ -255,6 +272,7 @@ function saveConfig() {
     'trigger_mode','motion_sensor_pin','motion_timeout_sec',
     'hardware_type','pca9685_address','pca9685_i2c_bus','pca9685_frequency',
     'channel_pan','channel_tilt',
+    'tracking_mode',
     'servo_pan_min','servo_pan_max','servo_pan_center','servo_pan_speed','servo_pan_invert',
     'servo_tilt_min','servo_tilt_max','servo_tilt_center','servo_tilt_speed','servo_tilt_invert',
     'face_smoothing','deadzone_px',
