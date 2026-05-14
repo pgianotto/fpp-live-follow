@@ -28,6 +28,9 @@ if [ ! -d "$PLUGIN_DIR/venv" ]; then
         flask pyyaml smbus2 "mediapipe==0.10.9"
 fi
 
+# ── Ensure plugin dir is owned by fpp (installer may run as root via sudo) ───
+sudo chown -R fpp:fpp "$PLUGIN_DIR" 2>/dev/null || true
+
 # ── Clone or update shared Python core from animatronic-motion-system ─────────
 CORE_DIR="/home/fpp/media/animatronic"
 if [ -d "$CORE_DIR/.git" ]; then
