@@ -11,25 +11,41 @@ if ! dpkg -s python3-opencv &>/dev/null 2>&1; then
     sudo apt-get install -y python3-pip python3-opencv v4l-utils curl
 fi
 
-# ── uv (fast Python installer) ────────────────────────────────────────────────
-export PATH="$HOME/.local/bin:$PATH"
+# ── uv (fast Python installer) — install to /usr/local/bin so all users see it ─
+export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"
 if ! command -v uv &>/dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+    # Move to system path so the fpp user can also invoke it
+    if [ -f "$HOME/.local/bin/uv" ]; then
+        sudo mv "$HOME/.local/bin/uv" /usr/local/bin/uv 2>/dev/null || true
+    fi
+    export PATH="/usr/local/bin:$PATH"
 fi
 
-# ── Python 3.11 venv (mediapipe has no 3.13 wheels yet) ──────────────────────
+# ── Python 3.11 venv — create as fpp so Python downloads land in /home/fpp ───
+# Running as root causes uv to download Python to /root/.local, which fpp
+# cannot read; the venv symlink then breaks when systemd starts the service.
 if [ ! -d "$PLUGIN_DIR/venv" ]; then
     echo "Creating Python venv and installing packages..."
-    uv venv --python 3.11 "$PLUGIN_DIR/venv"
-    uv pip install --python "$PLUGIN_DIR/venv/bin/python" \
-        flask pyyaml smbus2 "mediapipe==0.10.9" RPi.GPIO 2>/dev/null || \
-    uv pip install --python "$PLUGIN_DIR/venv/bin/python" \
-        flask pyyaml smbus2 "mediapipe==0.10.9"
+    if python3 -c "import sys; assert sys.version_info[:2] == (3,11)" 2>/dev/null; then
+        # System Python is already 3.11 — skip uv download entirely
+        sudo -u fpp python3 -m venv "$PLUGIN_DIR/venv"
+        sudo -u fpp "$PLUGIN_DIR/venv/bin/pip" install --quiet \
+            flask pyyaml smbus2 "mediapipe==0.10.9" RPi.GPIO 2>/dev/null || \
+        sudo -u fpp "$PLUGIN_DIR/venv/bin/pip" install --quiet \
+            flask pyyaml smbus2 "mediapipe==0.10.9"
+    else
+        # Need uv to fetch Python 3.11; run as fpp so files land in /home/fpp
+        sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+            uv venv --python 3.11 "$PLUGIN_DIR/venv"
+        sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+            uv pip install --python "$PLUGIN_DIR/venv/bin/python" \
+            flask pyyaml smbus2 "mediapipe==0.10.9" RPi.GPIO 2>/dev/null || \
+        sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+            uv pip install --python "$PLUGIN_DIR/venv/bin/python" \
+            flask pyyaml smbus2 "mediapipe==0.10.9"
+    fi
 fi
-
-# ── Ensure plugin dir is owned by fpp (installer may run as root via sudo) ───
-sudo chown -R fpp:fpp "$PLUGIN_DIR" 2>/dev/null || true
 
 # ── Clone or update shared Python core from animatronic-motion-system ─────────
 CORE_DIR="/home/fpp/media/animatronic"
