@@ -70,19 +70,19 @@ for d in core modes; do
     fi
 done
 
-# ── systemd service (create once, restart on updates) ─────────────────────────
+# ── systemd service (always write so updates stay current) ────────────────────
 SERVICE="/etc/systemd/system/fpp-live-follow.service"
-if [ ! -f "$SERVICE" ]; then
-    echo "Installing systemd service..."
-    cat > /tmp/fpp-live-follow.service << 'EOF'
+echo "Installing systemd service..."
+cat > /tmp/fpp-live-follow.service << 'EOF'
 [Unit]
 Description=FPP Animatronic Live Follow Daemon
-After=network.target fpp.service
+After=network.target fppd.service
 
 [Service]
 Type=simple
 User=fpp
 WorkingDirectory=PLUGIN_DIR_PLACEHOLDER
+ExecStartPre=/bin/sleep 8
 ExecStart=PLUGIN_DIR_PLACEHOLDER/venv/bin/python3 PLUGIN_DIR_PLACEHOLDER/daemon.py
 Restart=on-failure
 RestartSec=5
@@ -90,11 +90,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-    sed -i "s|PLUGIN_DIR_PLACEHOLDER|$PLUGIN_DIR|g" /tmp/fpp-live-follow.service
-    sudo mv /tmp/fpp-live-follow.service "$SERVICE"
-    sudo systemctl daemon-reload
-    sudo systemctl enable fpp-live-follow.service
-fi
+sed -i "s|PLUGIN_DIR_PLACEHOLDER|$PLUGIN_DIR|g" /tmp/fpp-live-follow.service
+sudo mv /tmp/fpp-live-follow.service "$SERVICE"
+sudo systemctl daemon-reload
+sudo systemctl enable fpp-live-follow.service
 
 sudo systemctl restart fpp-live-follow.service 2>/dev/null || true
 
