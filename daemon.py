@@ -13,7 +13,6 @@ Trigger modes
 
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -132,8 +131,6 @@ def _set_fpp_pca9685_output(enabled: bool):
         req  = urllib.request.Request(url, data=data, method='POST',
                                       headers={'Content-Type': 'application/json'})
         urllib.request.urlopen(req, timeout=3)
-        subprocess.run(['sudo', 'pkill', '-HUP', 'fppd'],
-                       capture_output=True, timeout=3)
         print(f'[LiveFollow] FPP PCA9685 output {"enabled" if enabled else "disabled"}.')
     except Exception as exc:
         print(f'[LiveFollow] Could not toggle FPP PCA9685 output: {exc}')
