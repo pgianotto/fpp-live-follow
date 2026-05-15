@@ -109,16 +109,24 @@ def _save_cfg(cfg: dict):
     CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CFG_PATH.write_text(json.dumps(cfg, indent=2))
 
-def _set_fpp_pca9685_output(enabled: bool):
-    """Toggle fppd's PCA9685 channel output so our smbus2 writes are not overwritten.
+_CO_OTHER_PATH = Path('/home/fpp/media/config/co-other.json')
+_CO_OTHER_API  = 'http://localhost/api/channel/output/co-other'
 
-    Saves the co-other.json config via the FPP API then sends SIGHUP so fppd
-    reloads immediately.  Requires: fpp ALL=(ALL) NOPASSWD: /usr/bin/pkill -HUP fppd
-    in /etc/sudoers.d/fpp-hup-fppd.
+
+def _set_fpp_pca9685_output(enabled: bool):
+    """Toggle fppd's PCA9685 channel output.
+
+    Disable (enabled=False): POST via the FPP API so fppd reloads immediately
+    and stops writing to the chip — our smbus2 can then take over safely.
+
+    Enable (enabled=True): write the config file directly WITHOUT triggering
+    an API reload.  Posting the re-enable via the API causes fppd to enter a
+    crash/restart loop (it exits cleanly but systemd re-starts it into the same
+    conflict with our open I2C handle, hitting the rate limit).  Writing the
+    file only means fppd picks it up on its next clean start/restart.
     """
-    url = 'http://localhost/api/channel/output/co-other'
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with urllib.request.urlopen(_CO_OTHER_API, timeout=3) as resp:
             cfg = json.loads(resp.read())
         changed = False
         for out in cfg.get('channelOutputs', []):
@@ -127,11 +135,15 @@ def _set_fpp_pca9685_output(enabled: bool):
                 changed = True
         if not changed:
             return
-        data = json.dumps(cfg).encode()
-        req  = urllib.request.Request(url, data=data, method='POST',
-                                      headers={'Content-Type': 'application/json'})
-        urllib.request.urlopen(req, timeout=3)
-        print(f'[LiveFollow] FPP PCA9685 output {"enabled" if enabled else "disabled"}.')
+        if not enabled:
+            data = json.dumps(cfg).encode()
+            req  = urllib.request.Request(_CO_OTHER_API, data=data, method='POST',
+                                          headers={'Content-Type': 'application/json'})
+            urllib.request.urlopen(req, timeout=3)
+            print('[LiveFollow] FPP PCA9685 output disabled.')
+        else:
+            _CO_OTHER_PATH.write_text(json.dumps(cfg, indent=2))
+            print('[LiveFollow] FPP PCA9685 re-enabled in config (takes effect on next fppd restart).')
     except Exception as exc:
         print(f'[LiveFollow] Could not toggle FPP PCA9685 output: {exc}')
 
