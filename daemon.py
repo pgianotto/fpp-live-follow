@@ -13,9 +13,11 @@ Trigger modes
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 # ── Resolve shared Python core ────────────────────────────────────────────────
@@ -107,6 +109,35 @@ def _load_cfg() -> dict:
 def _save_cfg(cfg: dict):
     CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CFG_PATH.write_text(json.dumps(cfg, indent=2))
+
+def _set_fpp_pca9685_output(enabled: bool):
+    """Toggle fppd's PCA9685 channel output so our smbus2 writes are not overwritten.
+
+    Saves the co-other.json config via the FPP API then sends SIGHUP so fppd
+    reloads immediately.  Requires: fpp ALL=(ALL) NOPASSWD: /usr/bin/pkill -HUP fppd
+    in /etc/sudoers.d/fpp-hup-fppd.
+    """
+    url = 'http://localhost/api/channel/output/co-other'
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            cfg = json.loads(resp.read())
+        changed = False
+        for out in cfg.get('channelOutputs', []):
+            if out.get('type') == 'PCA9685':
+                out['enabled'] = 1 if enabled else 0
+                changed = True
+        if not changed:
+            return
+        data = json.dumps(cfg).encode()
+        req  = urllib.request.Request(url, data=data, method='POST',
+                                      headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=3)
+        subprocess.run(['sudo', 'pkill', '-HUP', 'fppd'],
+                       capture_output=True, timeout=3)
+        print(f'[LiveFollow] FPP PCA9685 output {"enabled" if enabled else "disabled"}.')
+    except Exception as exc:
+        print(f'[LiveFollow] Could not toggle FPP PCA9685 output: {exc}')
+
 
 def _build_tracking_config(cfg: dict) -> dict:
     return {
@@ -221,6 +252,7 @@ class LiveFollowDaemon:
     # ── Tracking control ─────────────────────────────────────────────────────
 
     def start_tracking(self):
+        _set_fpp_pca9685_output(False)
         with self._lock:
             if not self._tracking:
                 self._mode.start()
@@ -232,6 +264,7 @@ class LiveFollowDaemon:
             if self._tracking:
                 self._mode.stop()
                 self._tracking = False
+        _set_fpp_pca9685_output(True)
         print('[LiveFollow] Tracking stopped.')
 
     # ── Motion sensor ────────────────────────────────────────────────────────
