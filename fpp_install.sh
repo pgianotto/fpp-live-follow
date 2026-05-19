@@ -86,8 +86,9 @@ User=fpp
 WorkingDirectory=PLUGIN_DIR_PLACEHOLDER
 ExecStartPre=/bin/sleep 8
 ExecStart=PLUGIN_DIR_PLACEHOLDER/venv/bin/python3 PLUGIN_DIR_PLACEHOLDER/daemon.py
-Restart=on-failure
+Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
