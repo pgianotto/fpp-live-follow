@@ -67,9 +67,10 @@ DEFAULTS = {
     'servo_tilt_center':   90,
     'servo_tilt_speed':    150,   # degrees/sec at frame edge
     'servo_tilt_invert':   False,
-    'face_smoothing':      0.6,   # higher = more responsive, lower = smoother
-    'deadzone_px':         25,
-    'tracking_mode':       'face',   # face | body | face_or_body
+    'face_smoothing':         0.6,   # higher = more responsive, lower = smoother
+    'deadzone_px':            25,
+    'tracking_mode':          'face',   # face | body | face_or_body
+    'follow_release_timeout': 1.5,      # seconds after body leaves frame before releasing servos
 }
 
 def _load_cfg() -> dict:
@@ -196,6 +197,13 @@ class LiveFollowDaemon:
         self._mode    = None
 
         self._motion_timer: threading.Timer = None
+        self._test_timer:   threading.Timer = None
+
+        # sequence_follow state
+        self._sequence_playing = False
+        self._body_last_seen   = 0.0
+        self._follow_active    = False
+        self._body_in_frame    = False
 
         self._start_components()
         self._start_camera_thread()
@@ -205,6 +213,8 @@ class LiveFollowDaemon:
             self.start_tracking()
         elif mode == 'motion_sensor':
             self._setup_motion_sensor()
+        elif mode == 'sequence_follow':
+            self._poll_fpp_status_once()
 
     # ── Component management ─────────────────────────────────────────────────
 
@@ -249,10 +259,14 @@ class LiveFollowDaemon:
             if not ok or frame is None:
                 continue
             result = self._tracker.process(frame)
+            body_in_frame = self._is_body_in_frame(result)
             with self._lock:
                 self._result = result
+                self._body_in_frame = body_in_frame
                 if self._tracking:
                     self._mode.update(result)
+            if self.cfg.get('trigger_mode') == 'sequence_follow':
+                self._update_follow_state(body_in_frame)
             display = self._tracker.draw_overlay(frame.copy(), result)
             _, buf = cv2.imencode('.jpg', display, [cv2.IMWRITE_JPEG_QUALITY, 70])
             with self._frame_lock:
@@ -299,20 +313,64 @@ class LiveFollowDaemon:
         self._motion_timer = threading.Timer(timeout, self.stop_tracking)
         self._motion_timer.start()
 
+    # ── sequence_follow helpers ──────────────────────────────────────────────
+
+    def _is_body_in_frame(self, result) -> bool:
+        if result is None:
+            return False
+        mode = self.cfg.get('tracking_mode', 'face')
+        if mode == 'body':
+            return bool(getattr(result, 'body_detected', result.face_detected))
+        if mode == 'face_or_body':
+            return bool(result.face_detected or getattr(result, 'body_detected', False))
+        return bool(result.face_detected)
+
+    def _poll_fpp_status_once(self):
+        try:
+            with urllib.request.urlopen('http://localhost/api/fppd/status', timeout=2) as resp:
+                data = json.loads(resp.read())
+            playing = data.get('status_name', 'idle').lower() in ('playing', 'testing')
+            self._sequence_playing = playing
+            if not playing:
+                self.start_tracking()
+        except Exception as exc:
+            print(f'[LiveFollow] Could not poll FPP status: {exc}')
+            self.start_tracking()
+
+    def _update_follow_state(self, body_in_frame: bool):
+        """Drive sequence_follow mode: take over servos on body detect, release on timeout."""
+        now = time.time()
+        if body_in_frame:
+            self._body_last_seen = now
+        if self._sequence_playing:
+            if body_in_frame and not self._follow_active:
+                self._follow_active = True
+                self.start_tracking()
+            elif not body_in_frame and self._follow_active:
+                timeout = float(self.cfg.get('follow_release_timeout', 1.5))
+                if now - self._body_last_seen >= timeout:
+                    self._follow_active = False
+                    self.stop_tracking()
+        # No sequence playing → free follow (tracking already on from startup / playlist_stop)
+
     # ── Status ───────────────────────────────────────────────────────────────
 
     def status(self) -> dict:
         with self._lock:
             r = self._result
+            body_in_frame = self._body_in_frame
         return {
-            'tracking':      self._tracking,
-            'trigger_mode':  self.cfg.get('trigger_mode', 'always_on'),
-            'face_detected': bool(r and r.face_detected),
-            'pan':           self._servos.get_angle('pan')  if self._servos else 90,
-            'tilt':          self._servos.get_angle('tilt') if self._servos else 90,
-            'head_yaw':      float(r.head_yaw)   if r else 0.0,
-            'head_pitch':    float(r.head_pitch) if r else 0.0,
-            'cam_running':   self._cam_running,
+            'tracking':         self._tracking,
+            'trigger_mode':     self.cfg.get('trigger_mode', 'always_on'),
+            'face_detected':    bool(r and r.face_detected),
+            'body_in_frame':    body_in_frame,
+            'sequence_playing': self._sequence_playing,
+            'follow_active':    self._follow_active,
+            'pan':              self._servos.get_angle('pan')  if self._servos else 90,
+            'tilt':             self._servos.get_angle('tilt') if self._servos else 90,
+            'head_yaw':         float(r.head_yaw)   if r else 0.0,
+            'head_pitch':       float(r.head_pitch) if r else 0.0,
+            'cam_running':      self._cam_running,
         }
 
     # ── MJPEG stream ─────────────────────────────────────────────────────────
@@ -339,6 +397,11 @@ class LiveFollowDaemon:
             self.start_tracking()
         if self.cfg.get('trigger_mode') == 'motion_sensor':
             self._setup_motion_sensor()
+        if self.cfg.get('trigger_mode') == 'sequence_follow':
+            self._sequence_playing = False
+            self._follow_active    = False
+            self._body_last_seen   = 0.0
+            self._poll_fpp_status_once()
 
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -364,6 +427,19 @@ def api_stop():
     return jsonify({'ok': True})
 
 
+@app.route('/api/test', methods=['POST'])
+def api_test():
+    """Start tracking for a short duration for verification; auto-stops after duration."""
+    data = request.get_json(force=True, silent=True) or {}
+    duration = float(data.get('duration', 5))
+    if daemon._test_timer:
+        daemon._test_timer.cancel()
+    daemon.start_tracking()
+    daemon._test_timer = threading.Timer(duration, daemon.stop_tracking)
+    daemon._test_timer.start()
+    return jsonify({'ok': True, 'duration': duration})
+
+
 @app.route('/api/fpp_event', methods=['POST'])
 def api_fpp_event():
     """Called by the FPP callbacks script for playlist start/stop."""
@@ -375,6 +451,15 @@ def api_fpp_event():
             daemon.start_tracking()
         elif event == 'playlist_stop':
             daemon.stop_tracking()
+    elif mode == 'sequence_follow':
+        if event == 'playlist_start':
+            daemon._sequence_playing = True
+            daemon._follow_active    = False
+            daemon.stop_tracking()          # hand control back to FPP sequence
+        elif event == 'playlist_stop':
+            daemon._sequence_playing = False
+            daemon._follow_active    = False
+            daemon.start_tracking()         # resume free follow
     return jsonify({'ok': True})
 
 

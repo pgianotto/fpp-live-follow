@@ -42,7 +42,9 @@ if (file_exists($co_other_path)) {
 .af-btn       { padding:8px 20px; border:none; border-radius:5px; font-weight:bold; cursor:pointer; font-size:13px; }
 .btn-start    { background:#4cc9f0; color:#000; }
 .btn-stop     { background:#e63946; color:#fff; }
+.btn-test     { background:#7209b7; color:#fff; }
 .btn-save     { background:#06d6a0; color:#000; }
+.badge-seq    { background:#f8961e; color:#000; }
 .af-select    { background:#0f3460; color:#e0e0e0; border:1px solid #4cc9f0; border-radius:4px; padding:5px 10px; font-size:13px; }
 .af-input     { background:#0f3460; color:#e0e0e0; border:1px solid #555; border-radius:4px; padding:5px 8px; width:70px; font-size:13px; }
 .af-stream    { border:2px solid #0f3460; border-radius:6px; max-width:100%; }
@@ -61,12 +63,28 @@ if (file_exists($co_other_path)) {
     </span>
     <button class="af-btn btn-start" onclick="sendCmd('/api/start')"  style="<?= $tracking ? 'display:none' : '' ?>" id="btn-start">▶ Start</button>
     <button class="af-btn btn-stop"  onclick="sendCmd('/api/stop')"   style="<?= $tracking ? '' : 'display:none' ?>" id="btn-stop">■ Stop</button>
+    <button class="af-btn btn-test"  onclick="testFollow()" id="btn-test" title="Start tracking for 5 seconds to verify servo response">◆ Test (5s)</button>
   </div>
   <div class="af-row">
     <span class="af-label">Face</span>
     <span class="af-badge <?= $face ? 'badge-face' : 'badge-off' ?>" id="badge-face">
       <?= $face ? 'DETECTED' : 'NOT DETECTED' ?>
     </span>
+  </div>
+  <!-- sequence_follow status rows — shown only when trigger_mode == sequence_follow -->
+  <div id="row-seq-status" style="<?= $trigger_mode !== 'sequence_follow' ? 'display:none' : '' ?>">
+    <div class="af-row">
+      <span class="af-label">Sequence</span>
+      <span class="af-badge badge-off" id="badge-seq">IDLE</span>
+    </div>
+    <div class="af-row">
+      <span class="af-label">Body</span>
+      <span class="af-badge badge-off" id="badge-body">NOT IN FRAME</span>
+    </div>
+    <div class="af-row">
+      <span class="af-label">Follow</span>
+      <span class="af-badge badge-off" id="badge-follow">WAITING</span>
+    </div>
   </div>
   <div class="af-row">
     <span class="af-label">Pan</span>   <span class="af-value" id="val-pan"><?= number_format($status['pan'] ?? 90, 1) ?>°</span>
@@ -111,10 +129,11 @@ if (file_exists($co_other_path)) {
     <select class="af-select" id="cfg-trigger">
       <?php
       $modes = [
-        'always_on'     => 'Always On — tracking runs whenever FPP is running',
-        'show_active'   => 'Show Active — activates when a sequence plays',
-        'command'       => 'FPP Command — controlled via playlist commands',
-        'motion_sensor' => 'Motion Sensor — GPIO pin triggers tracking',
+        'always_on'       => 'Always On — tracking runs whenever FPP is running',
+        'show_active'     => 'Show Active — activates when a sequence plays',
+        'sequence_follow' => 'Sequence Follow — body triggers override during sequence',
+        'command'         => 'FPP Command — controlled via playlist commands',
+        'motion_sensor'   => 'Motion Sensor — GPIO pin triggers tracking',
       ];
       foreach ($modes as $val => $label):
         $sel = ($trigger_mode === $val) ? 'selected' : '';
@@ -128,6 +147,12 @@ if (file_exists($co_other_path)) {
     <input class="af-input" id="cfg-motion-pin"    type="number" value="<?= (int)($cfg['motion_sensor_pin'] ?? 7) ?>">
     <span class="af-label" style="width:auto; margin-left:16px;">Auto-off (sec)</span>
     <input class="af-input" id="cfg-motion-timeout" type="number" value="<?= (int)($cfg['motion_timeout_sec'] ?? 30) ?>">
+  </div>
+  <div class="af-row" id="row-seq-follow" style="<?= $trigger_mode !== 'sequence_follow' ? 'display:none' : '' ?>">
+    <span class="af-label">Release Timeout</span>
+    <input class="af-input" id="cfg-follow_release_timeout" type="number" step="0.1" min="0.1"
+           value="<?= floatval($cfg['follow_release_timeout'] ?? 1.5) ?>">
+    <span style="color:#888; font-size:11px; margin-left:8px;">seconds after body leaves frame before handing back to sequence</span>
   </div>
   <div style="margin-top:8px;">
     <button class="af-btn btn-save" onclick="saveConfig()">Save &amp; Apply</button>
@@ -281,9 +306,23 @@ function sendCmd(endpoint) {
     .then(() => pollStatus());
 }
 
+function testFollow() {
+  fetch(API + '/api/test', {method:'POST', headers:{'Content-Type':'application/json'},
+                            body: JSON.stringify({duration: 5})})
+    .then(r => r.json())
+    .then(() => {
+      document.getElementById('status-msg').textContent = 'Test follow active — stops in 5 seconds…';
+      setTimeout(() => {
+        document.getElementById('status-msg').textContent = '';
+        pollStatus();
+      }, 5500);
+      pollStatus();
+    });
+}
+
 function saveConfig() {
   const fields = [
-    'trigger_mode','motion_sensor_pin','motion_timeout_sec',
+    'trigger_mode','motion_sensor_pin','motion_timeout_sec','follow_release_timeout',
     'hardware_type','pca9685_address','pca9685_i2c_bus','pca9685_frequency',
     'channel_pan','channel_tilt',
     'tracking_mode',
@@ -363,14 +402,25 @@ function pollStatus() {
       if (s.cam_running === false) {
         document.getElementById('cam-ownership-card').style.display = '';
       }
+      // sequence_follow badges
+      const isSeqFollow = s.trigger_mode === 'sequence_follow';
+      document.getElementById('row-seq-status').style.display = isSeqFollow ? '' : 'none';
+      if (isSeqFollow) {
+        document.getElementById('badge-seq').textContent    = s.sequence_playing ? 'PLAYING' : 'IDLE';
+        document.getElementById('badge-seq').className      = 'af-badge ' + (s.sequence_playing ? 'badge-seq' : 'badge-off');
+        document.getElementById('badge-body').textContent   = s.body_in_frame ? 'IN FRAME' : 'NOT IN FRAME';
+        document.getElementById('badge-body').className     = 'af-badge ' + (s.body_in_frame ? 'badge-face' : 'badge-off');
+        document.getElementById('badge-follow').textContent = s.follow_active ? 'ACTIVE' : 'WAITING';
+        document.getElementById('badge-follow').className   = 'af-badge ' + (s.follow_active ? 'badge-on' : 'badge-off');
+      }
     })
     .catch(() => {});
 }
 
-// Show/hide motion sensor fields
+// Show/hide mode-specific config fields
 document.getElementById('cfg-trigger').addEventListener('change', function() {
-  document.getElementById('row-motion').style.display =
-    this.value === 'motion_sensor' ? '' : 'none';
+  document.getElementById('row-motion').style.display    = this.value === 'motion_sensor'   ? '' : 'none';
+  document.getElementById('row-seq-follow').style.display = this.value === 'sequence_follow' ? '' : 'none';
 });
 
 // Show frequency row only for pca9685 (Adafruit) backend
