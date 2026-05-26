@@ -71,6 +71,9 @@ for d in core modes; do
         echo "  WARNING: $CORE_DIR/$d not found — tracking code may not work."
     fi
 done
+# Pre-create models dir and fix ownership so the fpp daemon can write model files
+mkdir -p "$LIB_DIR/models"
+sudo chown -R fpp:fpp "$LIB_DIR"
 
 # ── systemd service (always write so updates stay current) ────────────────────
 SERVICE="/etc/systemd/system/fpp-live-follow.service"
