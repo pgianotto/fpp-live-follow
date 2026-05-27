@@ -281,7 +281,21 @@ def _set_fpp_pca9685_output(enabled: bool):
 
 
 def _ensure_fpp_pca9685_enabled():
-    """Re-enable FPP's PCA9685 output if it was left disabled by a previous run."""
+    """Re-enable FPP's PCA9685 output if it was left disabled by a previous run.
+
+    Skips if fpp-servo-calibrator is active — that service intentionally disables
+    PCA9685 output for exclusive I2C access, and re-enabling while it's running
+    would break it.
+    """
+    try:
+        import subprocess
+        r = subprocess.run(['systemctl', 'is-active', 'fpp-servo-calibrator'],
+                           capture_output=True, text=True)
+        if r.stdout.strip() == 'active':
+            print('[LiveFollow] Servo calibrator is running; skipping PCA9685 re-enable.')
+            return
+    except Exception:
+        pass
     try:
         cfg = json.loads(_CO_OTHER_PATH.read_text())
         for out in cfg.get('channelOutputs', []):
