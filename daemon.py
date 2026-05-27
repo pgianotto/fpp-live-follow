@@ -9,8 +9,20 @@ Trigger modes
   show_active    — FPP callbacks script calls /api/fpp_event on playlist start/stop
   command        — /api/start and /api/stop called by FPP playlist command scripts
   motion_sensor  — GPIO pin triggers tracking; auto-off after timeout
+
+Servo control strategy
+──────────────────────
+  FPP's PCA9685 channel output stays enabled at all times.  The daemon never
+  touches the I2C bus directly.  Instead, when tracking is active it writes
+  per-channel override values into FPP's channel data buffer via the overlay
+  range API (PUT /overlays/range/{channel} on port 32322).  FPP applies those
+  overrides every output frame on top of any sequence data, so the sequence
+  continues animating all other channels while the daemon steers pan/tilt.
+  When tracking stops the overlays are deleted and the sequence resumes control
+  of pan/tilt immediately.
 """
 
+import http.client
 import json
 import os
 import sys
@@ -20,8 +32,8 @@ import urllib.request
 from pathlib import Path
 
 # ── Resolve shared Python core ────────────────────────────────────────────────
-PLUGIN_DIR  = Path(__file__).parent
-LIB_DIR     = PLUGIN_DIR / 'lib'
+PLUGIN_DIR   = Path(__file__).parent
+LIB_DIR      = PLUGIN_DIR / 'lib'
 PROJECT_ROOT = PLUGIN_DIR.parent.parent  # works when inside the project tree
 
 for search in (LIB_DIR, PROJECT_ROOT):
@@ -35,7 +47,7 @@ import yaml
 from flask import Flask, Response, jsonify, request
 
 from core.camera import Camera
-from core.servo_controller import ServoController, create_backend
+from core.servo_controller import ServoController, ServoBackend, create_backend
 from core.tracker import Tracker
 from modes.live_tracking import LiveTrackingMode
 
@@ -51,7 +63,7 @@ DEFAULTS = {
     'camera_index':        0,
     'camera_width':        640,
     'camera_height':       480,
-    'hardware_type':       'smbus2',
+    'hardware_type':       'fpp_overlay',  # fpp_overlay | smbus2 | mock
     'pca9685_address':     '0x40',
     'pca9685_i2c_bus':     1,
     'pca9685_frequency':   50,
@@ -67,10 +79,10 @@ DEFAULTS = {
     'servo_tilt_center':   90,
     'servo_tilt_speed':    150,   # degrees/sec at frame edge
     'servo_tilt_invert':   False,
-    'face_smoothing':         0.6,   # higher = more responsive, lower = smoother
+    'face_smoothing':         0.6,
     'deadzone_px':            25,
     'tracking_mode':          'face',   # face | body | face_or_body
-    'follow_release_timeout': 1.5,      # seconds after body leaves frame before releasing servos
+    'follow_release_timeout': 1.5,
 }
 
 def _load_cfg() -> dict:
@@ -114,17 +126,140 @@ _CO_OTHER_PATH = Path('/home/fpp/media/config/co-other.json')
 _CO_OTHER_API  = 'http://localhost/api/channel/output/co-other'
 
 
+# ── FPP overlay servo backend ─────────────────────────────────────────────────
+
+def _read_pca9685_port_configs() -> list:
+    """Parse co-other.json into a per-port config list for FppOverlayServoBackend."""
+    try:
+        cfg = json.loads(_CO_OTHER_PATH.read_text())
+        for out in cfg.get('channelOutputs', []):
+            if out.get('type') != 'PCA9685':
+                continue
+            sc    = out.get('startChannel', 1)
+            ports = out.get('ports', [])
+            result = []
+            for p in ports:
+                dt       = p.get('dataType', 0)
+                is_16bit = dt in (2, 3, 5)
+                result.append({
+                    'fpp_start_channel': sc,
+                    'is_16bit':   is_16bit,
+                    'min_us':     float(p.get('min',    1000)),
+                    'center_us':  float(p.get('center', 1500)),
+                    'max_us':     float(p.get('max',    2000)),
+                })
+                sc += 2 if is_16bit else 1
+            return result
+    except Exception as exc:
+        print(f'[LiveFollow] Could not read PCA9685 port configs from co-other.json: {exc}')
+    return []
+
+
+class FppOverlayServoBackend(ServoBackend):
+    """Writes servo angles into FPP's channel buffer via the overlay range API.
+
+    FPP keeps full ownership of the PCA9685 and I2C bus.  The daemon writes
+    persistent per-channel overrides that FPP applies every output frame,
+    merging them on top of the running sequence.  Calling delete_channels()
+    removes those overrides so the sequence regains control instantly.
+    """
+
+    # FPP 16-bit SCALED format:  0=zeroBehavior, 1..32767 → min..center,
+    #                            32768..65535 → center..max
+    # FPP  8-bit SCALED format:  0=zeroBehavior, 1..127  → min..center,
+    #                            128..255 → center..max
+
+    def __init__(self, port_configs: list):
+        self._ports = port_configs
+        self._conn: http.client.HTTPConnection = None
+        self._lock = threading.Lock()
+
+    # ── HTTP helper ───────────────────────────────────────────────────────────
+
+    def _put(self, path: str, body: str):
+        with self._lock:
+            try:
+                if self._conn is None:
+                    self._conn = http.client.HTTPConnection(
+                        '127.0.0.1', 32322, timeout=0.1)
+                self._conn.request('PUT', path, body,
+                                   {'Content-Type': 'application/json'})
+                resp = self._conn.getresponse()
+                resp.read()
+            except Exception:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+    # ── Angle → FPP scaled value ──────────────────────────────────────────────
+
+    def _angle_to_fpp_val(self, angle: float, port: dict) -> int:
+        pulse_us  = 1000.0 + (float(angle) / 180.0) * 1000.0
+        min_us    = port['min_us']
+        center_us = port['center_us']
+        max_us    = port['max_us']
+        if port['is_16bit']:
+            if pulse_us <= center_us:
+                val = round((pulse_us - min_us) / (center_us - min_us) * 32767)
+            else:
+                val = 32768 + round((pulse_us - center_us) /
+                                    (max_us - center_us) * 32767)
+            return max(1, min(65535, val))
+        else:
+            if pulse_us <= center_us:
+                val = round((pulse_us - min_us) / (center_us - min_us) * 127)
+            else:
+                val = 128 + round((pulse_us - center_us) /
+                                  (max_us - center_us) * 127)
+            return max(1, min(255, val))
+
+    # ── ServoBackend interface ────────────────────────────────────────────────
+
+    def set_angle(self, channel: int, angle: float):
+        if channel >= len(self._ports):
+            return
+        port    = self._ports[channel]
+        fpp_val = self._angle_to_fpp_val(angle, port)
+        fpp_ch  = port['fpp_start_channel']
+        if port['is_16bit']:
+            self._put(f'/overlays/range/{fpp_ch}',
+                      f'{{"Value": {(fpp_val >> 8) & 0xFF}}}')
+            self._put(f'/overlays/range/{fpp_ch + 1}',
+                      f'{{"Value": {fpp_val & 0xFF}}}')
+        else:
+            self._put(f'/overlays/range/{fpp_ch}',
+                      f'{{"Value": {fpp_val}}}')
+
+    def delete_channels(self, pca9685_channels: list):
+        """Remove overlay overrides for the given PCA9685 port numbers."""
+        for ch in pca9685_channels:
+            if ch >= len(self._ports):
+                continue
+            port   = self._ports[ch]
+            fpp_ch = port['fpp_start_channel']
+            self._put(f'/overlays/range/{fpp_ch}', '{"delete": true}')
+            if port['is_16bit']:
+                self._put(f'/overlays/range/{fpp_ch + 1}', '{"delete": true}')
+
+    def close(self):
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+
+# ── FPP output toggle ─────────────────────────────────────────────────────────
+
 def _set_fpp_pca9685_output(enabled: bool):
-    """Toggle fppd's PCA9685 channel output.
+    """Enable or disable fppd's PCA9685 channel output via the FPP API.
 
-    Disable (enabled=False): POST via the FPP API so fppd reloads immediately
-    and stops writing to the chip — our smbus2 can then take over safely.
-
-    Enable (enabled=True): write the config file directly WITHOUT triggering
-    an API reload.  Posting the re-enable via the API causes fppd to enter a
-    crash/restart loop (it exits cleanly but systemd re-starts it into the same
-    conflict with our open I2C handle, hitting the rate limit).  Writing the
-    file only means fppd picks it up on its next clean start/restart.
+    Only needed when switching to/from smbus2 direct-control mode.
+    In fpp_overlay mode fppd's PCA9685 output must remain enabled.
     """
     try:
         with urllib.request.urlopen(_CO_OTHER_API, timeout=3) as resp:
@@ -136,18 +271,29 @@ def _set_fpp_pca9685_output(enabled: bool):
                 changed = True
         if not changed:
             return
-        if not enabled:
-            data = json.dumps(cfg).encode()
-            req  = urllib.request.Request(_CO_OTHER_API, data=data, method='POST',
-                                          headers={'Content-Type': 'application/json'})
-            urllib.request.urlopen(req, timeout=3)
-            print('[LiveFollow] FPP PCA9685 output disabled.')
-        else:
-            _CO_OTHER_PATH.write_text(json.dumps(cfg, indent=2))
-            print('[LiveFollow] FPP PCA9685 re-enabled in config (takes effect on next fppd restart).')
+        data = json.dumps(cfg).encode()
+        req  = urllib.request.Request(_CO_OTHER_API, data=data, method='POST',
+                                      headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=3)
+        print(f'[LiveFollow] FPP PCA9685 output {"enabled" if enabled else "disabled"}.')
     except Exception as exc:
         print(f'[LiveFollow] Could not toggle FPP PCA9685 output: {exc}')
 
+
+def _ensure_fpp_pca9685_enabled():
+    """Re-enable FPP's PCA9685 output if it was left disabled by a previous run."""
+    try:
+        cfg = json.loads(_CO_OTHER_PATH.read_text())
+        for out in cfg.get('channelOutputs', []):
+            if out.get('type') == 'PCA9685' and not out.get('enabled', 1):
+                print('[LiveFollow] Re-enabling FPP PCA9685 output (was disabled).')
+                _set_fpp_pca9685_output(True)
+                return
+    except Exception:
+        pass
+
+
+# ── Tracking config builder ───────────────────────────────────────────────────
 
 def _build_tracking_config(cfg: dict) -> dict:
     return {
@@ -172,7 +318,7 @@ def _build_tracking_config(cfg: dict) -> dict:
                      'invert':       bool(cfg.get('servo_tilt_invert', False))},
         },
         'live_tracking': {
-            'deadzone_px':   cfg['deadzone_px'],
+            'deadzone_px':    cfg['deadzone_px'],
             'face_smoothing': cfg.get('face_smoothing', 0.25),
             'tracking_mode':  cfg.get('tracking_mode', 'face'),
         },
@@ -205,6 +351,13 @@ class LiveFollowDaemon:
         self._follow_active    = False
         self._body_in_frame    = False
 
+        # overlay release state — tracks whether pan/tilt overlays are live
+        self._overlay_active   = False
+        self._overlay_last_seen = 0.0
+
+        if self.cfg.get('hardware_type') == 'fpp_overlay':
+            _ensure_fpp_pca9685_enabled()
+
         self._start_components()
         self._start_camera_thread()
 
@@ -219,13 +372,25 @@ class LiveFollowDaemon:
     # ── Component management ─────────────────────────────────────────────────
 
     def _start_components(self):
-        tc = _build_tracking_config(self.cfg)
-        hw = tc['hardware']
-        try:
-            backend = create_backend(hw)
-        except Exception:
-            from core.servo_controller import MockServoBackend
-            backend = MockServoBackend()
+        tc  = _build_tracking_config(self.cfg)
+        hw  = tc['hardware']
+        hw_type = hw.get('type', 'mock')
+
+        if hw_type == 'fpp_overlay':
+            port_configs = _read_pca9685_port_configs()
+            if port_configs:
+                backend = FppOverlayServoBackend(port_configs)
+            else:
+                print('[LiveFollow] No PCA9685 port configs found; using mock backend.')
+                from core.servo_controller import MockServoBackend
+                backend = MockServoBackend()
+        else:
+            try:
+                backend = create_backend(hw)
+            except Exception:
+                from core.servo_controller import MockServoBackend
+                backend = MockServoBackend()
+
         self._servos  = ServoController(backend, tc['servos'],
                                         hw['channel_assignments'])
         self._tracker = Tracker()
@@ -267,6 +432,8 @@ class LiveFollowDaemon:
                     self._mode.update(result)
             if self.cfg.get('trigger_mode') == 'sequence_follow':
                 self._update_follow_state(body_in_frame)
+            if self._tracking:
+                self._handle_overlay_release(body_in_frame)
             display = self._tracker.draw_overlay(frame.copy(), result)
             _, buf = cv2.imencode('.jpg', display, [cv2.IMWRITE_JPEG_QUALITY, 70])
             with self._frame_lock:
@@ -275,11 +442,12 @@ class LiveFollowDaemon:
     # ── Tracking control ─────────────────────────────────────────────────────
 
     def start_tracking(self):
-        _set_fpp_pca9685_output(False)
         with self._lock:
             if not self._tracking:
                 self._mode.start()
                 self._tracking = True
+        self._overlay_active    = False
+        self._overlay_last_seen = 0.0
         print('[LiveFollow] Tracking started.')
 
     def stop_tracking(self):
@@ -287,8 +455,34 @@ class LiveFollowDaemon:
             if self._tracking:
                 self._mode.stop()
                 self._tracking = False
-        _set_fpp_pca9685_output(True)
+        self._overlay_active = False
+        # Remove pan/tilt overlays so the sequence resumes control of those channels
+        if self._servos and isinstance(self._servos._backend, FppOverlayServoBackend):
+            pan_ch  = self.cfg['channel_pan']
+            tilt_ch = self.cfg['channel_tilt']
+            self._servos._backend.delete_channels([pan_ch, tilt_ch])
         print('[LiveFollow] Tracking stopped.')
+
+    def _handle_overlay_release(self, body_in_frame: bool):
+        """Delete pan/tilt overlays when no face/body has been seen for the release timeout.
+
+        While a subject is in frame the servo loop writes overlays continuously.
+        When the subject leaves the last overlay value would otherwise freeze the
+        servos; this method cleans them up so the sequence resumes control.
+        """
+        if not isinstance(self._servos._backend, FppOverlayServoBackend):
+            return
+        now = time.time()
+        if body_in_frame:
+            self._overlay_active    = True
+            self._overlay_last_seen = now
+        elif self._overlay_active:
+            timeout = float(self.cfg.get('follow_release_timeout', 1.5))
+            if now - self._overlay_last_seen >= timeout:
+                self._overlay_active = False
+                self._servos._backend.delete_channels(
+                    [self.cfg['channel_pan'], self.cfg['channel_tilt']]
+                )
 
     # ── Motion sensor ────────────────────────────────────────────────────────
 
@@ -338,7 +532,7 @@ class LiveFollowDaemon:
             self.start_tracking()
 
     def _update_follow_state(self, body_in_frame: bool):
-        """Drive sequence_follow mode: take over servos on body detect, release on timeout."""
+        """Drive sequence_follow mode: take over pan/tilt on body detect, release on timeout."""
         now = time.time()
         if body_in_frame:
             self._body_last_seen = now
@@ -391,6 +585,8 @@ class LiveFollowDaemon:
         self._cam_running = False
         time.sleep(0.2)
         self._stop_components()
+        if self.cfg.get('hardware_type') == 'fpp_overlay':
+            _ensure_fpp_pca9685_enabled()
         self._start_components()
         self._start_camera_thread()
         if was_tracking or self.cfg.get('trigger_mode') == 'always_on':
@@ -455,11 +651,11 @@ def api_fpp_event():
         if event == 'playlist_start':
             daemon._sequence_playing = True
             daemon._follow_active    = False
-            daemon.stop_tracking()          # hand control back to FPP sequence
+            daemon.stop_tracking()       # hand control back to FPP sequence
         elif event == 'playlist_stop':
             daemon._sequence_playing = False
             daemon._follow_active    = False
-            daemon.start_tracking()         # resume free follow
+            daemon.start_tracking()      # resume free follow
     return jsonify({'ok': True})
 
 

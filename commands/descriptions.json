@@ -3,18 +3,21 @@
         "name": "Live Follow: Start Tracking",
         "group": "Animatronic",
         "description": "Start face-tracking and servo following. Works in any trigger mode.",
+        "script": "start_tracking.sh",
         "args": []
     },
     {
         "name": "Live Follow: Stop Tracking",
         "group": "Animatronic",
         "description": "Stop face-tracking and center servos.",
+        "script": "stop_tracking.sh",
         "args": []
     },
     {
         "name": "Live Follow: Set Trigger Mode",
         "group": "Animatronic",
         "description": "Change how the animatronic activates. Takes effect immediately.",
+        "script": "set_trigger_mode.sh",
         "args": [
             {
                 "name": "Mode",
