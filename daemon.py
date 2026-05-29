@@ -372,16 +372,11 @@ class LiveFollowDaemon:
         if self.cfg.get('hardware_type') == 'fpp_overlay':
             _ensure_fpp_pca9685_enabled()
 
+        self._fpp_poll_running = False
+
         self._start_components()
         self._start_camera_thread()
-
-        mode = self.cfg.get('trigger_mode', 'always_on')
-        if mode == 'always_on':
-            self.start_tracking()
-        elif mode == 'motion_sensor':
-            self._setup_motion_sensor()
-        elif mode == 'sequence_follow':
-            self._poll_fpp_status_once()
+        self._apply_trigger_mode()
 
     # ── Component management ─────────────────────────────────────────────────
 
@@ -452,6 +447,55 @@ class LiveFollowDaemon:
             _, buf = cv2.imencode('.jpg', display, [cv2.IMWRITE_JPEG_QUALITY, 70])
             with self._frame_lock:
                 self._latest_jpg = buf.tobytes()
+
+    # ── Trigger mode bootstrap ───────────────────────────────────────────────
+
+    def _apply_trigger_mode(self):
+        mode = self.cfg.get('trigger_mode', 'always_on')
+        if mode == 'always_on':
+            self.start_tracking()
+        elif mode == 'motion_sensor':
+            self._setup_motion_sensor()
+        elif mode in ('sequence_follow', 'show_active'):
+            self._start_fpp_poll_thread()
+        # 'command' mode: do nothing — tracking only starts on explicit command
+
+    def _start_fpp_poll_thread(self):
+        """Continuously poll FPP playback status for sequence_follow and show_active modes."""
+        if self._fpp_poll_running:
+            return
+        self._fpp_poll_running = True
+        def _loop():
+            while self._fpp_poll_running:
+                try:
+                    with urllib.request.urlopen(
+                            'http://localhost/api/fppd/status', timeout=2) as r:
+                        data = json.loads(r.read())
+                    playing = data.get('status_name', 'idle').lower() in ('playing', 'testing')
+                    was_playing = self._sequence_playing
+                    self._sequence_playing = playing
+                    mode = self.cfg.get('trigger_mode', 'always_on')
+                    if mode == 'sequence_follow':
+                        if playing and not was_playing:
+                            # Sequence just started — hand control to FSEQ
+                            self._follow_active = False
+                            self.stop_tracking()
+                        elif not playing and was_playing:
+                            # Sequence stopped — resume free follow
+                            self._follow_active = False
+                            self.start_tracking()
+                        elif not playing and not self._tracking:
+                            # Idle on startup — start free follow
+                            self.start_tracking()
+                    elif mode == 'show_active':
+                        if playing and not was_playing:
+                            self.start_tracking()
+                        elif not playing and was_playing:
+                            self.stop_tracking()
+                except Exception:
+                    pass
+                time.sleep(3)
+        threading.Thread(target=_loop, daemon=True, name='fpp-status-poll').start()
 
     # ── Tracking control ─────────────────────────────────────────────────────
 
@@ -533,18 +577,6 @@ class LiveFollowDaemon:
             return bool(result.face_detected or getattr(result, 'body_detected', False))
         return bool(result.face_detected)
 
-    def _poll_fpp_status_once(self):
-        try:
-            with urllib.request.urlopen('http://localhost/api/fppd/status', timeout=2) as resp:
-                data = json.loads(resp.read())
-            playing = data.get('status_name', 'idle').lower() in ('playing', 'testing')
-            self._sequence_playing = playing
-            if not playing:
-                self.start_tracking()
-        except Exception as exc:
-            print(f'[LiveFollow] Could not poll FPP status: {exc}')
-            self.start_tracking()
-
     def _update_follow_state(self, body_in_frame: bool):
         """Drive sequence_follow mode: take over pan/tilt on body detect, release on timeout."""
         now = time.time()
@@ -594,24 +626,19 @@ class LiveFollowDaemon:
 
     def reload_config(self):
         self.cfg = _load_cfg()
-        was_tracking = self._tracking
         self.stop_tracking()
+        self._fpp_poll_running = False   # stop old poll thread
         self._cam_running = False
         time.sleep(0.2)
         self._stop_components()
         if self.cfg.get('hardware_type') == 'fpp_overlay':
             _ensure_fpp_pca9685_enabled()
+        self._sequence_playing = False
+        self._follow_active    = False
+        self._body_last_seen   = 0.0
         self._start_components()
         self._start_camera_thread()
-        if was_tracking or self.cfg.get('trigger_mode') == 'always_on':
-            self.start_tracking()
-        if self.cfg.get('trigger_mode') == 'motion_sensor':
-            self._setup_motion_sensor()
-        if self.cfg.get('trigger_mode') == 'sequence_follow':
-            self._sequence_playing = False
-            self._follow_active    = False
-            self._body_last_seen   = 0.0
-            self._poll_fpp_status_once()
+        self._apply_trigger_mode()
 
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -652,25 +679,46 @@ def api_test():
 
 @app.route('/api/fpp_event', methods=['POST'])
 def api_fpp_event():
-    """Called by the FPP callbacks script for playlist start/stop."""
+    """Called by FPP callbacks (playlist start/stop) for instant response without waiting for poll."""
     data  = request.get_json(force=True, silent=True) or {}
     event = data.get('event', '')
     mode  = daemon.cfg.get('trigger_mode', 'always_on')
-    if mode == 'show_active':
-        if event == 'playlist_start':
-            daemon.start_tracking()
-        elif event == 'playlist_stop':
+    if event == 'playlist_start':
+        daemon._sequence_playing = True
+        if mode == 'sequence_follow':
+            daemon._follow_active = False
             daemon.stop_tracking()
-    elif mode == 'sequence_follow':
-        if event == 'playlist_start':
-            daemon._sequence_playing = True
-            daemon._follow_active    = False
-            daemon.stop_tracking()       # hand control back to FPP sequence
-        elif event == 'playlist_stop':
-            daemon._sequence_playing = False
-            daemon._follow_active    = False
-            daemon.start_tracking()      # resume free follow
+        elif mode == 'show_active':
+            daemon.start_tracking()
+    elif event == 'playlist_stop':
+        daemon._sequence_playing = False
+        if mode == 'sequence_follow':
+            daemon._follow_active = False
+            daemon.start_tracking()
+        elif mode == 'show_active':
+            daemon.stop_tracking()
     return jsonify({'ok': True})
+
+
+@app.route('/api/fpp_command', methods=['POST'])
+def api_fpp_command():
+    """Endpoint for FPP Command playlist items and scripts.
+
+    Accepts JSON body: {"command": "start" | "stop" | "toggle"}
+    Also accepts query-string: ?command=start
+
+    Use this in FPP playlists via 'Run Script' items pointing to
+    commands/start_tracking.sh or commands/stop_tracking.sh.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    cmd  = data.get('command') or request.args.get('command', '').lower()
+    if cmd == 'start':
+        daemon.start_tracking()
+    elif cmd == 'stop':
+        daemon.stop_tracking()
+    elif cmd == 'toggle':
+        daemon.stop_tracking() if daemon._tracking else daemon.start_tracking()
+    return jsonify({'ok': True, 'tracking': daemon._tracking})
 
 
 @app.route('/api/config', methods=['GET'])

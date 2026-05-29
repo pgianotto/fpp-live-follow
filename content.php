@@ -126,13 +126,13 @@ if (file_exists($co_other_path)) {
   <h3>Trigger Mode</h3>
   <div class="af-row">
     <span class="af-label">Mode</span>
-    <select class="af-select" id="cfg-trigger">
+    <select class="af-select" id="cfg-trigger" onchange="onModeChange(this.value)">
       <?php
       $modes = [
-        'always_on'       => 'Always On — tracking runs whenever FPP is running',
-        'show_active'     => 'Show Active — activates when a sequence plays',
-        'sequence_follow' => 'Sequence Follow — body triggers override during sequence',
-        'command'         => 'FPP Command — controlled via playlist commands',
+        'sequence_follow' => 'Show Mode (Recommended) — FSEQ controls servos; detected face activates live follow',
+        'command'         => 'FPP Command — start/stop via FPP playlist command or script',
+        'always_on'       => 'Always On — live tracking at all times (standalone use only)',
+        'show_active'     => 'During Show — activates when any FPP playlist runs',
         'motion_sensor'   => 'Motion Sensor — GPIO pin triggers tracking',
       ];
       foreach ($modes as $val => $label):
@@ -142,11 +142,48 @@ if (file_exists($co_other_path)) {
       <?php endforeach; ?>
     </select>
   </div>
+
+  <!-- Mode descriptions -->
+  <div id="mode-desc-sequence_follow" class="mode-desc" style="<?= $trigger_mode !== 'sequence_follow' ? 'display:none':'' ?>">
+    <p style="color:#888; font-size:12px; margin:8px 0 4px;">
+      FPP sequences control all servo channels by default. When a face or body enters the frame,
+      live follow temporarily overrides pan &amp; tilt. When the subject leaves, the sequence
+      resumes control. Set the <strong>Backend Type</strong> below to <strong>FPP Overlay</strong>.
+    </p>
+  </div>
+  <div id="mode-desc-command" class="mode-desc" style="<?= $trigger_mode !== 'command' ? 'display:none':'' ?>">
+    <p style="color:#888; font-size:12px; margin:8px 0 4px;">
+      Tracking only activates when explicitly commanded. In FPP's playlist editor, add a
+      <strong>Script</strong> item and point it to:<br>
+      <code style="color:#4cc9f0;">plugins/fpp-live-follow/commands/start_tracking.sh</code><br>
+      <code style="color:#4cc9f0;">plugins/fpp-live-follow/commands/stop_tracking.sh</code>
+    </p>
+  </div>
+  <div id="mode-desc-always_on" class="mode-desc" style="<?= $trigger_mode !== 'always_on' ? 'display:none':'' ?>">
+    <p style="color:#888; font-size:12px; margin:8px 0 4px;">
+      Live tracking is always active. <strong style="color:#fb8500;">Do not use this mode when FPP
+      sequences control the same servo channels</strong> — the live-follow overlays will block the
+      sequence data. Use Show Mode instead.
+    </p>
+  </div>
+  <div id="mode-desc-show_active" class="mode-desc" style="<?= $trigger_mode !== 'show_active' ? 'display:none':'' ?>">
+    <p style="color:#888; font-size:12px; margin:8px 0 4px;">
+      Tracking activates when any FPP playlist starts playing and stops when it ends.
+      FPP status is polled every 3 seconds; for instant response also set up FPP callbacks.
+    </p>
+  </div>
+  <div id="mode-desc-motion_sensor" class="mode-desc" style="<?= $trigger_mode !== 'motion_sensor' ? 'display:none':'' ?>">
+    <p style="color:#888; font-size:12px; margin:8px 0 4px;">
+      A PIR or other sensor on the GPIO pin below triggers tracking. Tracking auto-stops
+      after the timeout if no rising edge is seen.
+    </p>
+  </div>
+
   <div class="af-row" id="row-motion" style="<?= $trigger_mode !== 'motion_sensor' ? 'display:none' : '' ?>">
     <span class="af-label">GPIO Pin (BCM)</span>
-    <input class="af-input" id="cfg-motion-pin"    type="number" value="<?= (int)($cfg['motion_sensor_pin'] ?? 7) ?>">
+    <input class="af-input" id="cfg-motion_sensor_pin"    type="number" value="<?= (int)($cfg['motion_sensor_pin'] ?? 7) ?>">
     <span class="af-label" style="width:auto; margin-left:16px;">Auto-off (sec)</span>
-    <input class="af-input" id="cfg-motion-timeout" type="number" value="<?= (int)($cfg['motion_timeout_sec'] ?? 30) ?>">
+    <input class="af-input" id="cfg-motion_timeout_sec" type="number" value="<?= (int)($cfg['motion_timeout_sec'] ?? 30) ?>">
   </div>
   <div class="af-row" id="row-seq-follow" style="<?= $trigger_mode !== 'sequence_follow' ? 'display:none' : '' ?>">
     <span class="af-label">Release Timeout</span>
@@ -241,13 +278,32 @@ if (file_exists($co_other_path)) {
   <h3>Hardware</h3>
   <div class="af-row">
     <span class="af-label">Backend Type</span>
-    <select class="af-select" id="cfg-hardware_type">
-      <?php foreach (['smbus2','pca9685','gpio','serial','mock'] as $t): ?>
-        <option value="<?= $t ?>" <?= ($hw_type === $t) ? 'selected' : '' ?>><?= $t ?></option>
+    <select class="af-select" id="cfg-hardware_type" onchange="onHwTypeChange(this.value)">
+      <?php
+      $hw_options = [
+        'fpp_overlay' => 'FPP Overlay (Recommended) — FPP owns I2C; overlays steer pan/tilt',
+        'smbus2'      => 'smbus2 — direct I2C (only for standalone, no FPP sequences)',
+        'pca9685'     => 'pca9685 — Adafruit library direct I2C',
+        'mock'        => 'mock — testing only',
+      ];
+      foreach ($hw_options as $t => $label): ?>
+        <option value="<?= $t ?>" <?= ($hw_type === $t) ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
       <?php endforeach; ?>
     </select>
   </div>
-  <div class="af-row" id="row-i2c">
+  <div id="row-hw-hint-overlay" style="<?= $hw_type !== 'fpp_overlay' ? 'display:none':'' ?>; margin:4px 0 8px 142px;">
+    <span style="color:#888; font-size:11px;">
+      FPP Overlay keeps FPP in control of the PCA9685. Live-follow writes servo overrides on top of
+      any playing sequence — when tracking stops, the sequence resumes control of those channels instantly.
+    </span>
+  </div>
+  <div id="row-hw-hint-direct" style="<?= $hw_type === 'fpp_overlay' ? 'display:none':'' ?>; margin:4px 0 8px 142px;">
+    <span style="color:#fb8500; font-size:11px;">
+      Direct I2C backends conflict with FPP's Channel Outputs — disable the PCA9685 channel output
+      in FPP or use FPP Overlay mode instead if playing FSEQ sequences.
+    </span>
+  </div>
+  <div class="af-row" id="row-i2c" style="<?= $hw_type === 'fpp_overlay' ? 'display:none' : '' ?>">
     <span class="af-label">I2C Address</span>
     <input class="af-input" id="cfg-pca9685_address" style="width:90px"
            value="<?= htmlspecialchars($cfg['pca9685_address'] ?? '0x40') ?>">
@@ -255,11 +311,11 @@ if (file_exists($co_other_path)) {
     <input class="af-input" id="cfg-pca9685_i2c_bus" type="number" style="width:60px"
            value="<?= (int)($cfg['pca9685_i2c_bus'] ?? 1) ?>">
   </div>
-  <div class="af-row" id="row-freq" style="<?= in_array($hw_type, ['smbus2','gpio','serial','mock']) ? 'display:none' : '' ?>">
+  <div class="af-row" id="row-freq" style="<?= ($hw_type !== 'pca9685') ? 'display:none' : '' ?>">
     <span class="af-label">Frequency (Hz)</span>
     <input class="af-input" id="cfg-pca9685_frequency" type="number"
            value="<?= (int)($cfg['pca9685_frequency'] ?? 50) ?>">
-    <span style="color:#888; font-size:11px; margin-left:8px;">pca9685 backend only — smbus2 reads this from device</span>
+    <span style="color:#888; font-size:11px; margin-left:8px;">pca9685 backend only</span>
   </div>
   <div class="af-row">
     <span class="af-label">Pan Channel</span>
@@ -417,17 +473,21 @@ function pollStatus() {
     .catch(() => {});
 }
 
-// Show/hide mode-specific config fields
-document.getElementById('cfg-trigger').addEventListener('change', function() {
-  document.getElementById('row-motion').style.display    = this.value === 'motion_sensor'   ? '' : 'none';
-  document.getElementById('row-seq-follow').style.display = this.value === 'sequence_follow' ? '' : 'none';
-});
+function onModeChange(val) {
+  document.querySelectorAll('.mode-desc').forEach(el => el.style.display = 'none');
+  const desc = document.getElementById('mode-desc-' + val);
+  if (desc) desc.style.display = '';
+  document.getElementById('row-motion').style.display     = val === 'motion_sensor'   ? '' : 'none';
+  document.getElementById('row-seq-follow').style.display = val === 'sequence_follow' ? '' : 'none';
+}
 
-// Show frequency row only for pca9685 (Adafruit) backend
-document.getElementById('cfg-hardware_type').addEventListener('change', function() {
-  document.getElementById('row-freq').style.display =
-    this.value === 'pca9685' ? '' : 'none';
-});
+function onHwTypeChange(val) {
+  const isOverlay = val === 'fpp_overlay';
+  document.getElementById('row-i2c').style.display          = isOverlay ? 'none' : '';
+  document.getElementById('row-freq').style.display         = val === 'pca9685' ? '' : 'none';
+  document.getElementById('row-hw-hint-overlay').style.display = isOverlay ? '' : 'none';
+  document.getElementById('row-hw-hint-direct').style.display  = isOverlay ? 'none' : '';
+}
 
 // Poll status every 2 seconds
 setInterval(pollStatus, 2000);

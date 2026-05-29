@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Live Follow: Start Tracking",
+    "command": "Run Script",
+    "multisyncCommand": false,
+    "multisyncHosts": "",
+    "args": ["/home/fpp/media/plugins/fpp-live-follow/commands/start_tracking.sh"]
+  },
+  {
+    "name": "Live Follow: Stop Tracking",
+    "command": "Run Script",
+    "multisyncCommand": false,
+    "multisyncHosts": "",
+    "args": ["/home/fpp/media/plugins/fpp-live-follow/commands/stop_tracking.sh"]
+  },
+  {
+    "name": "Live Follow: Set Mode",
+    "command": "Run Script",
+    "multisyncCommand": false,
+    "multisyncHosts": "",
+    "args": ["/home/fpp/media/plugins/fpp-live-follow/commands/set_trigger_mode.sh", "sequence_follow"]
+  }
+]
