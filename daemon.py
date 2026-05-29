@@ -364,6 +364,7 @@ class LiveFollowDaemon:
         self._body_last_seen   = 0.0
         self._follow_active    = False
         self._body_in_frame    = False
+        self._user_stopped     = False  # set by /api/stop; suppresses idle auto-restart
 
         # overlay release state — tracks whether pan/tilt overlays are live
         self._overlay_active   = False
@@ -486,7 +487,7 @@ class LiveFollowDaemon:
                             # Sequence stopped — resume free follow
                             self._follow_active = False
                             self.start_tracking()
-                        elif not playing and not self._tracking:
+                        elif not playing and not self._tracking and not self._user_stopped:
                             # Idle on startup — start free follow
                             self.start_tracking()
                     elif mode == 'show_active':
@@ -502,6 +503,7 @@ class LiveFollowDaemon:
     # ── Tracking control ─────────────────────────────────────────────────────
 
     def start_tracking(self):
+        self._user_stopped = False
         with self._lock:
             if not self._tracking:
                 self._mode.start()
@@ -585,7 +587,7 @@ class LiveFollowDaemon:
         if body_in_frame:
             self._body_last_seen = now
         if self._sequence_playing:
-            if body_in_frame and not self._follow_active:
+            if body_in_frame and not self._follow_active and not self._user_stopped:
                 self._follow_active = True
                 self.start_tracking()
             elif not body_in_frame and self._follow_active:
@@ -663,6 +665,7 @@ def api_start():
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
+    daemon._user_stopped = True
     daemon.stop_tracking()
     return jsonify({'ok': True})
 
@@ -718,9 +721,14 @@ def api_fpp_command():
     if cmd == 'start':
         daemon.start_tracking()
     elif cmd == 'stop':
+        daemon._user_stopped = True
         daemon.stop_tracking()
     elif cmd == 'toggle':
-        daemon.stop_tracking() if daemon._tracking else daemon.start_tracking()
+        if daemon._tracking:
+            daemon._user_stopped = True
+            daemon.stop_tracking()
+        else:
+            daemon.start_tracking()
     return jsonify({'ok': True, 'tracking': daemon._tracking})
 
 
