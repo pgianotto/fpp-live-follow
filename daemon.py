@@ -373,6 +373,7 @@ class LiveFollowDaemon:
             _ensure_fpp_pca9685_enabled()
 
         self._fpp_poll_running = False
+        self._poll_generation  = 0   # incremented on reload to stop stale threads
 
         self._start_components()
         self._start_camera_thread()
@@ -465,8 +466,9 @@ class LiveFollowDaemon:
         if self._fpp_poll_running:
             return
         self._fpp_poll_running = True
+        my_gen = self._poll_generation
         def _loop():
-            while self._fpp_poll_running:
+            while self._fpp_poll_running and self._poll_generation == my_gen:
                 try:
                     with urllib.request.urlopen(
                             'http://localhost/api/fppd/status', timeout=2) as r:
@@ -627,7 +629,8 @@ class LiveFollowDaemon:
     def reload_config(self):
         self.cfg = _load_cfg()
         self.stop_tracking()
-        self._fpp_poll_running = False   # stop old poll thread
+        self._fpp_poll_running = False
+        self._poll_generation += 1   # invalidates any running poll thread immediately
         self._cam_running = False
         time.sleep(0.2)
         self._stop_components()

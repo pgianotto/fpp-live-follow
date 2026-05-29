@@ -126,7 +126,7 @@ if (file_exists($co_other_path)) {
   <h3>Trigger Mode</h3>
   <div class="af-row">
     <span class="af-label">Mode</span>
-    <select class="af-select" id="cfg-trigger" onchange="onModeChange(this.value)">
+    <select class="af-select" id="cfg-trigger_mode" onchange="onModeChange(this.value)">
       <?php
       $modes = [
         'sequence_follow' => 'Show Mode (Recommended) — FSEQ controls servos; detected face activates live follow',
