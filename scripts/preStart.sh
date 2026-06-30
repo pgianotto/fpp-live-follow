@@ -1,0 +1,8 @@
+#!/bin/bash
+# Reinstall service and Apache proxy if missing after an FPP OS upgrade.
+# FPP calls this before fppd starts on every boot.
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if ! systemctl is-enabled fpp-live-follow.service &>/dev/null 2>&1; then
+    echo "[fpp-live-follow] Service missing — reinstalling after OS upgrade..."
+    bash "$PLUGIN_DIR/fpp_install.sh"
+fi
