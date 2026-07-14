@@ -63,7 +63,7 @@ if [ -d "$CORE_DIR/.git" ]; then
     sudo -u fpp git -C "$CORE_DIR" pull --quiet 2>/dev/null || echo "  WARNING: git pull failed — using existing core"
 else
     echo "Cloning shared core library..."
-    git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" || \
+    sudo -u fpp git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" || \
         echo "  WARNING: git clone failed — tracking code may not work"
 fi
 
@@ -109,20 +109,14 @@ sudo systemctl enable fpp-live-follow.service
 
 sudo systemctl restart fpp-live-follow.service 2>/dev/null || true
 
-# ── Apache proxy (create once) ────────────────────────────────────────────────
-if [ ! -f "/etc/apache2/conf-available/fpp-live-follow-proxy.conf" ]; then
-    echo "Configuring Apache proxy..."
-    sudo a2enmod proxy proxy_http 2>/dev/null || true
-    cat > /tmp/fpp-live-follow-proxy.conf << 'EOF'
-<IfModule mod_proxy.c>
-    ProxyPass        /fpp-live-follow-api/ http://localhost:5001/ flushpackets=on
-    ProxyPassReverse /fpp-live-follow-api/ http://localhost:5001/
-</IfModule>
-EOF
-    sudo cp /tmp/fpp-live-follow-proxy.conf /etc/apache2/conf-available/fpp-live-follow-proxy.conf
-    sudo a2enconf fpp-live-follow-proxy 2>/dev/null || true
-    sudo systemctl reload apache2 2>/dev/null || true
-fi
+# ── Apache proxy (always write so reinstalls and updates stay current) ────────
+echo "Configuring Apache proxy..."
+sudo a2enmod proxy proxy_http 2>/dev/null || true
+PROXY_CONF="/etc/apache2/conf-available/fpp-live-follow-proxy.conf"
+printf '<IfModule mod_proxy.c>\n    ProxyPass        /fpp-live-follow-api/ http://localhost:5001/ flushpackets=on\n    ProxyPassReverse /fpp-live-follow-api/ http://localhost:5001/\n</IfModule>\n' \
+    | sudo tee "$PROXY_CONF" > /dev/null
+sudo ln -sf "$PROXY_CONF" /etc/apache2/conf-enabled/fpp-live-follow-proxy.conf
+sudo systemctl reload apache2 2>/dev/null || true
 
 chmod +x "$PLUGIN_DIR/scripts/preStart.sh"
 
