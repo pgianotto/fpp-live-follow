@@ -12,19 +12,19 @@ $cam_running  = $status['cam_running']  ?? true;   // default true; false = came
 $trigger_mode = $cfg['trigger_mode']    ?? 'always_on';
 $hw_type      = $cfg['hardware_type']   ?? 'mock';
 
-// Build servo channel list from FPP's co-other.json (same source as servo calibrator)
+// Build servo channel list from FPP's co-other config (same source as servo
+// calibrator) via the API — co-other.json's on-disk format isn't a stable
+// contract across FPP releases, the API is.
 $servo_ports = [];   // [['value'=>port_idx, 'label'=>'Port 0 — Pan', 'out'=>out_idx], ...]
-$co_other_path = '/home/fpp/media/config/co-other.json';
-if (file_exists($co_other_path)) {
-    $co = @json_decode(file_get_contents($co_other_path), true) ?? [];
-    foreach ($co['channelOutputs'] ?? [] as $out_idx => $out) {
-        if (empty($out['ports'])) continue;
-        $prefix = count($co['channelOutputs']) > 1 ? "Out$out_idx · " : '';
-        foreach ($out['ports'] as $port_idx => $port) {
-            $desc  = trim($port['description'] ?? '');
-            $label = $prefix . "Port $port_idx" . ($desc !== '' ? " — $desc" : '');
-            $servo_ports[] = ['value' => $port_idx, 'label' => $label, 'out' => $out_idx];
-        }
+$co_other_ctx = stream_context_create(['http' => ['timeout' => 3]]);
+$co = @json_decode(@file_get_contents('http://localhost/api/channel/output/co-other', false, $co_other_ctx), true) ?? [];
+foreach ($co['channelOutputs'] ?? [] as $out_idx => $out) {
+    if (empty($out['ports'])) continue;
+    $prefix = count($co['channelOutputs']) > 1 ? "Out$out_idx · " : '';
+    foreach ($out['ports'] as $port_idx => $port) {
+        $desc  = trim($port['description'] ?? '');
+        $label = $prefix . "Port $port_idx" . ($desc !== '' ? " — $desc" : '');
+        $servo_ports[] = ['value' => $port_idx, 'label' => $label, 'out' => $out_idx];
     }
 }
 ?>

@@ -16,8 +16,9 @@ fi
 export PATH="/usr/local/bin:$HOME/.local/bin:/root/.local/bin:$PATH"
 if ! command -v uv &>/dev/null; then
     echo "Installing uv..."
-    python3 -m pip install --quiet uv \
-        || python3 -m pip install --quiet --break-system-packages uv
+    # --break-system-packages is safe here: pip targets /usr/local/lib/python3.x/
+    # dist-packages, which dpkg doesn't track, so it can't conflict with apt.
+    python3 -m pip install --quiet --break-system-packages uv
 fi
 
 # ── Python packages — system-wide via uv, same as FPP manages its own ─────────
@@ -29,13 +30,13 @@ fi
 # Runs as fpp (not root) so the toolchain lands in /home/fpp, not /root, where
 # the systemd service (User=fpp below) can actually read it.
 echo "Ensuring Python 3.12 toolchain..."
-sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     uv python install 3.12
-PY_BIN=$(sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+PY_BIN=$(runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     uv python find 3.12)
 
 echo "Installing Python packages..."
-sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     uv pip install --system --python "$PY_BIN" --break-system-packages --quiet \
     flask pyyaml smbus2 mediapipe RPi.GPIO
 
@@ -44,12 +45,12 @@ CORE_DIR="/home/fpp/media/animatronic"
 if [ -d "$CORE_DIR/.git" ]; then
     echo "Updating shared core library..."
     chown -R fpp:fpp "$CORE_DIR" 2>/dev/null || true
-    sudo -u fpp git -C "$CORE_DIR" fetch --quiet \
-        && sudo -u fpp git -C "$CORE_DIR" reset --hard origin/master --quiet \
+    runuser -u fpp -- git -C "$CORE_DIR" fetch --quiet \
+        && runuser -u fpp -- git -C "$CORE_DIR" reset --hard origin/master --quiet \
         || echo "  WARNING: git update failed — using existing core"
 else
     echo "Cloning shared core library..."
-    sudo -u fpp git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" \
+    runuser -u fpp -- git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" \
         || echo "  WARNING: git clone failed — tracking code may not work"
 fi
 
