@@ -13,7 +13,7 @@ bash /home/fpp/media/plugins/fpp-live-follow/fpp_install.sh
 ```
 
 The install script:
-1. Installs Python 3.11 venv with Flask, MediaPipe, RPi.GPIO
+1. Installs Flask, MediaPipe, RPi.GPIO system-wide via `uv pip install --system`
 2. Clones [animatronic-motion-system](https://github.com/pgianotto/animatronic-motion-system) to `/home/fpp/media/animatronic` for shared tracking code
 3. Copies `core/` and `modes/` into the plugin's `lib/` folder
 4. Creates and starts a systemd service on port 5001
@@ -32,6 +32,17 @@ sudo systemctl restart fpp-live-follow
 
 Re-run `fpp_install.sh` only if the release notes mention new dependencies or changes
 to `core/` or `modes/` that need to be re-copied into `lib/`.
+
+---
+
+## Uninstall
+
+```bash
+bash /home/fpp/media/plugins/fpp-live-follow/fpp_uninstall.sh
+```
+
+Stops and removes the systemd service and Apache proxy config. FPP's Plugin
+Manager removes the plugin directory itself.
 
 ---
 
