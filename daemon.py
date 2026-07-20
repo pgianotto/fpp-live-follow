@@ -15,7 +15,8 @@ Servo control strategy
   FPP's PCA9685 channel output stays enabled at all times.  The daemon never
   touches the I2C bus directly.  Instead, when tracking is active it writes
   per-channel override values into FPP's channel data buffer via the overlay
-  range API (PUT /overlays/range/{channel} on port 32322).  FPP applies those
+  range API (PUT /api/overlays/range/{channel}, proxied by Apache to fppd's
+  internal API — see etc/apache2.site in the FPP repo). FPP applies those
   overrides every output frame on top of any sequence data, so the sequence
   continues animating all other channels while the daemon steers pan/tilt.
   When tracking stops the overlays are deleted and the sequence resumes control
@@ -50,6 +51,52 @@ from core.camera import Camera
 from core.servo_controller import ServoController, ServoBackend, create_backend
 from core.tracker import Tracker
 from modes.live_tracking import LiveTrackingMode
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Mirror stdout/stderr into FPP's log directory so this always-on service's
+# output shows up in FPP's log viewer and Support Zip, not just journalctl.
+
+class _TeeStream:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            try:
+                s.write(data)
+                s.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+
+def _init_logging():
+    log_dir = '/home/fpp/media/logs'
+    try:
+        with urllib.request.urlopen('http://localhost/api/settings/logDirectory',
+                                     timeout=3) as resp:
+            value = json.loads(resp.read()).get('value')
+            if value:
+                log_dir = value
+    except Exception:
+        pass  # fall back to the default above
+    try:
+        log_path = Path(log_dir) / 'plugin-fpp-live-follow.log'
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, 'a', buffering=1)
+        sys.stdout = _TeeStream(sys.stdout, log_file)
+        sys.stderr = _TeeStream(sys.stderr, log_file)
+    except Exception as exc:
+        print(f'[LiveFollow] Could not open log file: {exc}')
+
+
+_init_logging()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CFG_PATH    = Path('/home/fpp/media/config/animatronic_live_follow.json')
@@ -122,16 +169,23 @@ def _save_cfg(cfg: dict):
     CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CFG_PATH.write_text(json.dumps(cfg, indent=2))
 
-_CO_OTHER_PATH = Path('/home/fpp/media/config/co-other.json')
-_CO_OTHER_API  = 'http://localhost/api/channel/output/co-other'
+_CO_OTHER_API = 'http://localhost/api/channel/output/co-other'
+
+
+def _fetch_co_other_cfg() -> dict:
+    """Read the co-other channel-output config through FPP's API rather than
+    parsing co-other.json directly — the file's format isn't a stable contract
+    across FPP releases, the API is."""
+    with urllib.request.urlopen(_CO_OTHER_API, timeout=3) as resp:
+        return json.loads(resp.read())
 
 
 # ── FPP overlay servo backend ─────────────────────────────────────────────────
 
 def _read_pca9685_port_configs() -> list:
-    """Parse co-other.json into a per-port config list for FppOverlayServoBackend."""
+    """Turn the co-other config into a per-port config list for FppOverlayServoBackend."""
     try:
-        cfg = json.loads(_CO_OTHER_PATH.read_text())
+        cfg = _fetch_co_other_cfg()
         for out in cfg.get('channelOutputs', []):
             if out.get('type') != 'PCA9685':
                 continue
@@ -151,7 +205,7 @@ def _read_pca9685_port_configs() -> list:
                 sc += 2 if is_16bit else 1
             return result
     except Exception as exc:
-        print(f'[LiveFollow] Could not read PCA9685 port configs from co-other.json: {exc}')
+        print(f'[LiveFollow] Could not read PCA9685 port configs: {exc}')
     return []
 
 
@@ -177,12 +231,14 @@ class FppOverlayServoBackend(ServoBackend):
     # ── HTTP helper ───────────────────────────────────────────────────────────
 
     def _put(self, path: str, body: str):
+        # Goes through Apache's documented proxy for fppd's local API
+        # (see etc/apache2.site) rather than hitting port 32322 directly.
         with self._lock:
             try:
                 if self._conn is None:
                     self._conn = http.client.HTTPConnection(
-                        '127.0.0.1', 32322, timeout=0.1)
-                self._conn.request('PUT', path, body,
+                        'localhost', 80, timeout=0.5)
+                self._conn.request('PUT', f'/api{path}', body,
                                    {'Content-Type': 'application/json'})
                 resp = self._conn.getresponse()
                 resp.read()
@@ -262,8 +318,7 @@ def _set_fpp_pca9685_output(enabled: bool):
     In fpp_overlay mode fppd's PCA9685 output must remain enabled.
     """
     try:
-        with urllib.request.urlopen(_CO_OTHER_API, timeout=3) as resp:
-            cfg = json.loads(resp.read())
+        cfg = _fetch_co_other_cfg()
         changed = False
         for out in cfg.get('channelOutputs', []):
             if out.get('type') == 'PCA9685':
@@ -297,7 +352,7 @@ def _ensure_fpp_pca9685_enabled():
     except Exception:
         pass
     try:
-        cfg = json.loads(_CO_OTHER_PATH.read_text())
+        cfg = _fetch_co_other_cfg()
         for out in cfg.get('channelOutputs', []):
             if out.get('type') == 'PCA9685' and not out.get('enabled', 1):
                 print('[LiveFollow] Re-enabling FPP PCA9685 output (was disabled).')
@@ -772,4 +827,7 @@ def api_cam_restore():
 
 if __name__ == '__main__':
     print(f'[LiveFollow] Daemon starting on port {PORT}')
-    app.run(host='0.0.0.0', port=PORT, threaded=True)
+    # Apache proxies /fpp-live-follow-api/ to this port (see fpp_install.sh);
+    # bind to loopback only so it isn't directly reachable on the LAN,
+    # bypassing whatever auth Apache adds in front of it.
+    app.run(host='127.0.0.1', port=PORT, threaded=True)
