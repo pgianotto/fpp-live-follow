@@ -7,6 +7,7 @@
   "homeURL": "https://github.com/pgianotto/fpp-live-follow",
   "srcURL": "https://github.com/pgianotto/fpp-live-follow.git",
   "bugURL": "https://github.com/pgianotto/fpp-live-follow/issues",
+  "iconURL": "https://raw.githubusercontent.com/pgianotto/fpp-live-follow/master/icon.png",
   "allowUpdates": 1,
   "versions": [
     {
