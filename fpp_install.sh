@@ -21,9 +21,23 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # ── Python packages — system-wide via uv, same as FPP manages its own ─────────
+# mediapipe has no wheel for the OS's default Python (3.13 on current Pi
+# images) on linux_aarch64 — only up through cp312 — so uv provisions its own
+# 3.12 for this instead of a hand-rolled venv. --break-system-packages: PEP
+# 668 guards refuse any system-wide install otherwise, uv or pip alike (same
+# override pip itself needs on these images, see https://rptl.io/venv).
+# Runs as fpp (not root) so the toolchain lands in /home/fpp, not /root, where
+# the systemd service (User=fpp below) can actually read it.
+echo "Ensuring Python 3.12 toolchain..."
+sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+    uv python install 3.12
+PY_BIN=$(sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+    uv python find 3.12)
+
 echo "Installing Python packages..."
-uv pip install --system --quiet \
-    flask pyyaml smbus2 "mediapipe==0.10.9" RPi.GPIO
+sudo -u fpp env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
+    uv pip install --system --python "$PY_BIN" --break-system-packages --quiet \
+    flask pyyaml smbus2 mediapipe RPi.GPIO
 
 # ── Clone or update shared Python core from animatronic-motion-system ─────────
 CORE_DIR="/home/fpp/media/animatronic"
@@ -66,7 +80,7 @@ Type=simple
 User=fpp
 WorkingDirectory=PLUGIN_DIR_PLACEHOLDER
 ExecStartPre=/bin/sleep 8
-ExecStart=/usr/bin/python3 PLUGIN_DIR_PLACEHOLDER/daemon.py
+ExecStart=PYTHON_BIN_PLACEHOLDER PLUGIN_DIR_PLACEHOLDER/daemon.py
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0
@@ -74,7 +88,7 @@ StartLimitIntervalSec=0
 [Install]
 WantedBy=multi-user.target
 EOF
-sed -i "s|PLUGIN_DIR_PLACEHOLDER|$PLUGIN_DIR|g" /tmp/fpp-live-follow.service
+sed -i "s|PLUGIN_DIR_PLACEHOLDER|$PLUGIN_DIR|g; s|PYTHON_BIN_PLACEHOLDER|$PY_BIN|g" /tmp/fpp-live-follow.service
 mv /tmp/fpp-live-follow.service "$SERVICE"
 systemctl daemon-reload
 systemctl enable fpp-live-follow.service
