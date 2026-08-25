@@ -49,17 +49,17 @@ runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     flask pyyaml smbus2 mediapipe RPi.GPIO
 
 # ── Clone or update shared Python core from animatronic-motion-system ─────────
-# Pinned deliberately — bump this sha only after reviewing what changed upstream.
-CORE_SHA="b6f63a070bff09687ca47460b1927fd2edeb9004"
+# Pinned deliberately to a literal sha (not a variable) — bump it only after
+# reviewing what changed upstream.
 CORE_DIR="/home/fpp/media/animatronic"
 if [ -d "$CORE_DIR/.git" ]; then
     echo "Updating shared core library..."
     chown -R fpp:fpp "$CORE_DIR" 2>/dev/null || true
-    runuser -u fpp -- git -C "$CORE_DIR" fetch --quiet && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet "$CORE_SHA" \
+    runuser -u fpp -- git -C "$CORE_DIR" fetch --quiet && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet b6f63a070bff09687ca47460b1927fd2edeb9004 \
         || echo "  WARNING: git update failed — using existing core"
 else
     echo "Cloning shared core library..."
-    runuser -u fpp -- git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet "$CORE_SHA" \
+    runuser -u fpp -- git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet b6f63a070bff09687ca47460b1927fd2edeb9004 \
         || echo "  WARNING: git clone failed — tracking code may not work"
 fi
 
