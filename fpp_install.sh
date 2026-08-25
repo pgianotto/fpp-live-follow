@@ -6,6 +6,10 @@ LIB_DIR="$PLUGIN_DIR/lib"
 
 echo "Installing Animatronic Live Follow plugin..."
 
+# FPP majors before 10 have no plugin load/unload feature, so they need a full
+# fppd restart to pick up this install even though FPP 10 itself hot-loads it.
+source "${FPPDIR}/scripts/common" 2>/dev/null && setSetting restartFlag 1 || true
+
 # ── System packages (skip if already present) ─────────────────────────────────
 if ! dpkg -s python3-opencv &>/dev/null 2>&1; then
     # Recover from a prior interrupted apt/dpkg run (e.g. an OS upgrade or a
@@ -45,16 +49,19 @@ runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     flask pyyaml smbus2 mediapipe RPi.GPIO
 
 # ── Clone or update shared Python core from animatronic-motion-system ─────────
+# Pinned deliberately — bump this sha only after reviewing what changed upstream.
+CORE_SHA="b6f63a070bff09687ca47460b1927fd2edeb9004"
 CORE_DIR="/home/fpp/media/animatronic"
 if [ -d "$CORE_DIR/.git" ]; then
     echo "Updating shared core library..."
     chown -R fpp:fpp "$CORE_DIR" 2>/dev/null || true
     runuser -u fpp -- git -C "$CORE_DIR" fetch --quiet \
-        && runuser -u fpp -- git -C "$CORE_DIR" reset --hard origin/master --quiet \
+        && runuser -u fpp -- git -C "$CORE_DIR" reset --hard "$CORE_SHA" --quiet \
         || echo "  WARNING: git update failed — using existing core"
 else
     echo "Cloning shared core library..."
     runuser -u fpp -- git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" \
+        && runuser -u fpp -- git -C "$CORE_DIR" reset --hard "$CORE_SHA" --quiet \
         || echo "  WARNING: git clone failed — tracking code may not work"
 fi
 

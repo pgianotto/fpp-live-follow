@@ -5,6 +5,10 @@ PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Removing Animatronic Live Follow plugin..."
 
+# FPP majors before 10 have no plugin load/unload feature, so they need a full
+# fppd restart to pick up this uninstall even though FPP 10 itself hot-unloads it.
+source "${FPPDIR}/scripts/common" 2>/dev/null && setSetting restartFlag 1 || true
+
 # ── systemd service ─────────────────────────────────────────────────────────
 if systemctl list-unit-files fpp-live-follow.service &>/dev/null; then
     systemctl disable --now fpp-live-follow.service 2>/dev/null || true
