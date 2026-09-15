@@ -8,7 +8,10 @@ echo "Installing Animatronic Live Follow plugin..."
 
 # FPP majors before 10 have no plugin load/unload feature, so they need a full
 # fppd restart to pick up this install even though FPP 10 itself hot-loads it.
-source "${FPPDIR}/scripts/common" 2>/dev/null && setSetting restartFlag 1 || true
+# FPPDIR is unset on the uninstall path and scripts/common expands a bare
+# $LD_LIBRARY_PATH, so under `set -u` a plain `source` here aborts the whole
+# script instead of just failing this line — relax nounset in a subshell.
+( set +u; source "${FPPDIR:-/opt/fpp}/scripts/common" && setSetting restartFlag 1 ) || true
 
 # ── System packages (skip if already present) ─────────────────────────────────
 if ! dpkg -s python3-opencv &>/dev/null 2>&1; then

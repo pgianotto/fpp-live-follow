@@ -25,7 +25,9 @@
   ],
   "privacy": {
     "summary": "Uses your camera to keep a detected face or body centered in frame by moving pan/tilt servos. Runs on this device only; no video or tracking data is saved.",
-    "sends": [],
+    "sends": [
+      { "to": "storage.googleapis.com", "what": "a request for the face/body tracking model file (no personal or performance data)", "why": "one-time download of MediaPipe's tracking model the first time tracking is used", "alwaysOn": false }
+    ],
     "collects": [],
     "sensors": [
       { "type": "camera", "stored": false },
@@ -35,7 +37,8 @@
     ],
     "remoteAccess": "none",
     "systemChanges": [
-      { "kind": "service", "what": "installs and enables a systemd service running the tracking daemon, and an Apache proxy route on FPP's web server" }
+      { "kind": "service", "what": "installs and enables the fpp-live-follow systemd service running the tracking daemon" },
+      { "kind": "core-settings", "what": "writes /etc/apache2/conf-enabled/fpp-live-follow-proxy.conf, an Apache proxy route on FPP's web server" }
     ],
     "closedCode": false,
     "other": "none"
