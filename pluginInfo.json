@@ -22,5 +22,22 @@
       "branch": "master",
       "sha": ""
     }
-  ]
+  ],
+  "privacy": {
+    "summary": "Uses your camera to keep a detected face or body centered in frame by moving pan/tilt servos. Runs on this device only; no video or tracking data is saved.",
+    "sends": [],
+    "collects": [],
+    "sensors": [
+      { "type": "camera", "stored": false },
+      { "type": "face-tracking", "stored": false },
+      { "type": "body-tracking", "stored": false },
+      { "type": "gpio-input", "stored": false }
+    ],
+    "remoteAccess": "none",
+    "systemChanges": [
+      { "kind": "service", "what": "installs and enables a systemd service running the tracking daemon, and an Apache proxy route on FPP's web server" }
+    ],
+    "closedCode": false,
+    "other": "none"
+  }
 }
