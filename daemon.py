@@ -99,9 +99,12 @@ def _init_logging():
 _init_logging()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CFG_PATH    = Path('/home/fpp/media/config/animatronic_live_follow.json')
-FSEQ_DIR    = Path('/home/fpp/media/sequences')
-PORT        = 5001
+# Plugin-owned data lives under FPP's plugindata/ (PLUGIN_GUIDELINES §3.5),
+# not loose in FPP's own config/ directory where it used to be.
+MEDIA_DIR       = Path(os.environ.get('MEDIADIR', '/home/fpp/media'))
+CFG_PATH        = MEDIA_DIR / 'plugindata' / 'fpp-live-follow' / 'config.json'
+LEGACY_CFG_PATH = MEDIA_DIR / 'config' / 'animatronic_live_follow.json'
+PORT            = 5001
 
 DEFAULTS = {
     'trigger_mode':        'always_on',
@@ -132,7 +135,21 @@ DEFAULTS = {
     'follow_release_timeout': 1.5,
 }
 
+def _migrate_legacy_cfg():
+    """Move settings saved by versions before plugindata/ was used."""
+    if CFG_PATH.exists() or not LEGACY_CFG_PATH.exists():
+        return
+    try:
+        CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CFG_PATH.write_text(LEGACY_CFG_PATH.read_text())
+        LEGACY_CFG_PATH.unlink()
+        print(f'[LiveFollow] Moved settings from {LEGACY_CFG_PATH} to {CFG_PATH}.')
+    except Exception as exc:
+        print(f'[LiveFollow] Could not migrate legacy settings: {exc}')
+
+
 def _load_cfg() -> dict:
+    _migrate_legacy_cfg()
     if CFG_PATH.exists():
         try:
             return {**DEFAULTS, **json.loads(CFG_PATH.read_text())}
@@ -309,54 +326,23 @@ class FppOverlayServoBackend(ServoBackend):
                 self._conn = None
 
 
-# ── FPP output toggle ─────────────────────────────────────────────────────────
+# ── FPP output check ──────────────────────────────────────────────────────────
 
-def _set_fpp_pca9685_output(enabled: bool):
-    """Enable or disable fppd's PCA9685 channel output via the FPP API.
+def _warn_if_fpp_pca9685_disabled():
+    """Log a warning if FPP's PCA9685 output is disabled — never change it.
 
-    Only needed when switching to/from smbus2 direct-control mode.
-    In fpp_overlay mode fppd's PCA9685 output must remain enabled.
+    The output's on/off state belongs to the user (and to fpp-servo-calibrator,
+    which disables it while active and re-enables it itself, including after
+    its own crash). Re-enabling it here overrode outputs the user disabled on
+    purpose, e.g. a PWM-tab row that would fight a native servo cape for the
+    same chip (fpp-live-follow#3).
     """
-    try:
-        cfg = _fetch_co_other_cfg()
-        changed = False
-        for out in cfg.get('channelOutputs', []):
-            if out.get('type') == 'PCA9685':
-                out['enabled'] = 1 if enabled else 0
-                changed = True
-        if not changed:
-            return
-        data = json.dumps(cfg).encode()
-        req  = urllib.request.Request(_CO_OTHER_API, data=data, method='POST',
-                                      headers={'Content-Type': 'application/json'})
-        urllib.request.urlopen(req, timeout=3)
-        print(f'[LiveFollow] FPP PCA9685 output {"enabled" if enabled else "disabled"}.')
-    except Exception as exc:
-        print(f'[LiveFollow] Could not toggle FPP PCA9685 output: {exc}')
-
-
-def _ensure_fpp_pca9685_enabled():
-    """Re-enable FPP's PCA9685 output if it was left disabled by a previous run.
-
-    Skips if fpp-servo-calibrator is active — that service intentionally disables
-    PCA9685 output for exclusive I2C access, and re-enabling while it's running
-    would break it.
-    """
-    try:
-        import subprocess
-        r = subprocess.run(['systemctl', 'is-active', 'fpp-servo-calibrator'],
-                           capture_output=True, text=True)
-        if r.stdout.strip() == 'active':
-            print('[LiveFollow] Servo calibrator is running; skipping PCA9685 re-enable.')
-            return
-    except Exception:
-        pass
     try:
         cfg = _fetch_co_other_cfg()
         for out in cfg.get('channelOutputs', []):
             if out.get('type') == 'PCA9685' and not out.get('enabled', 1):
-                print('[LiveFollow] Re-enabling FPP PCA9685 output (was disabled).')
-                _set_fpp_pca9685_output(True)
+                print('[LiveFollow] WARNING: FPP PCA9685 output is disabled — '
+                      'servos will not move until it is enabled on the PWM tab.')
                 return
     except Exception:
         pass
@@ -426,7 +412,7 @@ class LiveFollowDaemon:
         self._overlay_last_seen = 0.0
 
         if self.cfg.get('hardware_type') == 'fpp_overlay':
-            _ensure_fpp_pca9685_enabled()
+            _warn_if_fpp_pca9685_disabled()
 
         self._fpp_poll_running = False
         self._poll_generation  = 0   # incremented on reload to stop stale threads
@@ -692,7 +678,7 @@ class LiveFollowDaemon:
         time.sleep(0.2)
         self._stop_components()
         if self.cfg.get('hardware_type') == 'fpp_overlay':
-            _ensure_fpp_pca9685_enabled()
+            _warn_if_fpp_pca9685_disabled()
         self._sequence_playing = False
         self._follow_active    = False
         self._body_last_seen   = 0.0

@@ -3,12 +3,15 @@
   "name": "Animatronic Live Follow",
   "version": "1.0.0",
   "author": "pgianotto",
-  "description": "Face-tracking servo control for animatronics. Keeps a detected face centered in frame using pan/tilt servos. Supports always-on, show-triggered, FPP command, and motion-sensor trigger modes.",
+  "description": "Face-tracking servo control for animatronics. Keeps a detected face centered in frame using pan/tilt servos. Supports always-on, show-triggered, FPP command, and motion-sensor trigger modes. Install uses uv to fetch a Python 3.12 runtime from GitHub (MediaPipe has no build for newer Python on the Pi); the tracking model is downloaded once from storage.googleapis.com.",
   "homeURL": "https://github.com/pgianotto/fpp-live-follow",
   "srcURL": "https://github.com/pgianotto/fpp-live-follow.git",
   "bugURL": "https://github.com/pgianotto/fpp-live-follow/issues",
   "iconURL": "https://raw.githubusercontent.com/pgianotto/fpp-live-follow/master/icon.png",
   "allowUpdates": 1,
+  "releaseNotesStyle": "gitHistory",
+  "minCpuCores": 4,
+  "minMemoryMB": 1024,
   "versions": [
     {
       "minFPPVersion": "9.5",
@@ -26,19 +29,54 @@
   "privacy": {
     "summary": "Uses your camera to keep a detected face or body centered in frame by moving pan/tilt servos. Runs on this device only; no video or tracking data is saved.",
     "sends": [
-      { "to": "storage.googleapis.com", "what": "a request for the face/body tracking model file (no personal or performance data)", "why": "one-time download of MediaPipe's tracking model the first time tracking is used", "alwaysOn": false }
+      {
+        "to": "storage.googleapis.com",
+        "what": "a request for the face/body tracking model file (no personal or performance data)",
+        "why": "one-time download of MediaPipe's tracking model the first time tracking is used",
+        "alwaysOn": false
+      }
     ],
     "collects": [],
     "sensors": [
-      { "type": "camera", "stored": false },
-      { "type": "face-tracking", "stored": false },
-      { "type": "body-tracking", "stored": false },
-      { "type": "gpio-input", "stored": false }
+      {
+        "type": "camera",
+        "stored": false
+      },
+      {
+        "type": "face-tracking",
+        "stored": false
+      },
+      {
+        "type": "body-tracking",
+        "stored": false
+      },
+      {
+        "type": "gpio-input",
+        "stored": false
+      }
     ],
     "remoteAccess": "none",
     "systemChanges": [
-      { "kind": "service", "what": "installs and enables the fpp-live-follow systemd service running the tracking daemon" },
-      { "kind": "core-settings", "what": "writes /etc/apache2/conf-enabled/fpp-live-follow-proxy.conf, an Apache proxy route on FPP's web server" }
+      {
+        "kind": "service",
+        "what": "installs and enables the fpp-live-follow systemd service running the tracking daemon"
+      },
+      {
+        "kind": "core-settings",
+        "what": "writes /etc/apache2/conf-enabled/fpp-live-follow-proxy.conf, an Apache proxy route on FPP's web server"
+      },
+      {
+        "kind": "core-settings",
+        "what": "adds this plugin's folder to git's system safe.directory list (/etc/gitconfig)"
+      },
+      {
+        "kind": "download",
+        "what": "installs uv via pip and a Python 3.12 runtime from github.com (astral-sh/python-build-standalone) into /home/fpp/.local"
+      },
+      {
+        "kind": "download",
+        "what": "clones the pinned tracking core library from github.com/pgianotto/animatronic-motion-system"
+      }
     ],
     "closedCode": false,
     "other": "none"

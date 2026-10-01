@@ -14,13 +14,16 @@ echo "Installing Animatronic Live Follow plugin..."
 ( set +u; source "${FPPDIR:-/opt/fpp}/scripts/common" && setSetting restartFlag 1 ) || true
 
 # ── System packages (skip if already present) ─────────────────────────────────
-if ! dpkg -s python3-opencv &>/dev/null 2>&1; then
+# Only pip is needed (to bootstrap uv). OpenCV comes from mediapipe's own
+# opencv-contrib-python wheel — the daemon runs on uv's Python 3.12, which
+# can't import the OS Python's apt python3-opencv anyway.
+if ! dpkg -s python3-pip &>/dev/null 2>&1; then
     # Recover from a prior interrupted apt/dpkg run (e.g. an OS upgrade or a
     # timed-out plugin install) — otherwise apt-get refuses to proceed at all.
     dpkg --configure -a || true
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y python3-pip python3-opencv v4l-utils
+    apt-get install -y python3-pip
 fi
 
 # ── uv (fast Python package installer) — install via pip, not a curl|sh script ─
@@ -46,27 +49,36 @@ runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
 PY_BIN=$(runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     uv python find 3.12)
 
+# mediapipe is pinned to 0.10.18: it's the newest release with a linux_aarch64
+# wheel for cp312 that runs on every Pi. 1.0.x ships one py3 wheel built with
+# ARMv8 AES instructions, which the Pi 4's Cortex-A72 lacks, so the daemon dies
+# with SIGILL on first detector load (#2). 0.10.20-0.10.35 have no aarch64
+# wheel at all.
 echo "Installing Python packages..."
 runuser -u fpp -- env HOME=/home/fpp PATH=/usr/local/bin:/usr/bin:/bin \
     uv pip install --system --python "$PY_BIN" --break-system-packages --quiet \
-    flask pyyaml smbus2 mediapipe RPi.GPIO
+    flask pyyaml smbus2 "mediapipe==0.10.18" RPi.GPIO
 
 # ── Clone or update shared Python core from animatronic-motion-system ─────────
 # Pinned deliberately to a literal sha (not a variable) — bump it only after
 # reviewing what changed upstream.
-CORE_DIR="/home/fpp/media/animatronic"
+# Kept inside this plugin's own directory (lib/ is gitignored), not in a shared
+# media folder, so install never touches anything outside the plugin and
+# FPP's Plugin Manager removes it on uninstall.
+CORE_DIR="$LIB_DIR/.core-src"
+mkdir -p "$LIB_DIR"
+chown fpp:fpp "$LIB_DIR"
 if [ -d "$CORE_DIR/.git" ]; then
     echo "Updating shared core library..."
     chown -R fpp:fpp "$CORE_DIR" 2>/dev/null || true
-    runuser -u fpp -- git -C "$CORE_DIR" fetch --quiet && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet b6f63a070bff09687ca47460b1927fd2edeb9004 \
+    runuser -u fpp -- git -C "$CORE_DIR" fetch --quiet && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet bcf0bbba7c1f33e03bf4d205716d3c1a8f329867 \
         || echo "  WARNING: git update failed — using existing core"
 else
     echo "Cloning shared core library..."
-    runuser -u fpp -- git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet b6f63a070bff09687ca47460b1927fd2edeb9004 \
+    runuser -u fpp -- git clone --quiet https://github.com/pgianotto/animatronic-motion-system.git "$CORE_DIR" && runuser -u fpp -- git -C "$CORE_DIR" checkout --quiet bcf0bbba7c1f33e03bf4d205716d3c1a8f329867 \
         || echo "  WARNING: git clone failed — tracking code may not work"
 fi
 
-mkdir -p "$LIB_DIR"
 for d in core modes; do
     if [ -d "$CORE_DIR/$d" ]; then
         rm -rf "$LIB_DIR/$d"
@@ -87,6 +99,10 @@ cat > /tmp/fpp-live-follow.service << 'EOF'
 [Unit]
 Description=FPP Animatronic Live Follow Daemon
 After=network.target fppd.service
+# Give up after 10 failed starts in 10 minutes instead of crash-looping forever
+# (each attempt loads MediaPipe, which costs CPU a running show needs).
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -96,7 +112,6 @@ ExecStartPre=/bin/sleep 8
 ExecStart=PYTHON_BIN_PLACEHOLDER PLUGIN_DIR_PLACEHOLDER/daemon.py
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
@@ -119,6 +134,8 @@ systemctl reload apache2 2>/dev/null || true
 
 # Allow root (used by FPP's plugin manager) to run git in this directory.
 # Without this, git 2.35+ rejects pull/fetch from root in fpp-owned dirs.
-git config --system --add safe.directory "$PLUGIN_DIR" 2>/dev/null || true
+# Checked first so reinstalls/updates don't append a duplicate line each time.
+git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$PLUGIN_DIR" \
+    || git config --system --add safe.directory "$PLUGIN_DIR" 2>/dev/null || true
 
 echo "Done. Access via FPP menu: Plugins > Animatronic Live Follow"
