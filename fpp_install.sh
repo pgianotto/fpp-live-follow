@@ -27,7 +27,7 @@ if ! dpkg -s python3-pip &>/dev/null 2>&1; then
 fi
 
 # ── uv (fast Python package installer) — install via pip, not a curl|sh script ─
-export PATH="/usr/local/bin:$HOME/.local/bin:/root/.local/bin:$PATH"
+export PATH="/usr/local/bin:${HOME:-/root}/.local/bin:/root/.local/bin:$PATH"
 if ! command -v uv &>/dev/null; then
     echo "Installing uv..."
     # --break-system-packages is safe here: pip targets /usr/local/lib/python3.x/
