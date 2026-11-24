@@ -14,19 +14,42 @@ $cam_running  = $status['cam_running']  ?? true;   // default true; false = came
 $trigger_mode = $cfg['trigger_mode']    ?? 'always_on';
 $hw_type      = $cfg['hardware_type']   ?? 'mock';
 
-// Build servo channel list from FPP's co-other config (same source as servo
-// calibrator) via the API — co-other.json's on-disk format isn't a stable
-// contract across FPP releases, the API is.
-$servo_ports = [];   // [['value'=>port_idx, 'label'=>'Port 0 — Pan', 'out'=>out_idx], ...]
-$co_other_ctx = stream_context_create(['http' => ['timeout' => 3]]);
-$co = @json_decode(@file_get_contents('http://localhost/api/channel/output/co-other', false, $co_other_ctx), true) ?? [];
-foreach ($co['channelOutputs'] ?? [] as $out_idx => $out) {
-    if (empty($out['ports'])) continue;
-    $prefix = count($co['channelOutputs']) > 1 ? "Out$out_idx · " : '';
-    foreach ($out['ports'] as $port_idx => $port) {
+// Build the servo port list from FPP's channel-output config via the API
+// (the on-disk formats aren't a stable contract across FPP releases, the API
+// is). Must match daemon.py _read_servo_port_configs() exactly — the option
+// value is the index into that list:
+//   1. ports of the first PCA9685 output on the PWM tab (co-other)
+//   2. Scaled Servo ports of enabled Servos-tab outputs (co-pwm, native capes
+//      such as the K2-Pi-Servo)
+$servo_ports = [];   // [['value'=>idx, 'label'=>..., 'native'=>?[min,max,center]], ...]
+$fpp_ctx = stream_context_create(['http' => ['timeout' => 3]]);
+$co = @json_decode(@file_get_contents('http://localhost/api/channel/output/co-other', false, $fpp_ctx), true) ?? [];
+foreach ($co['channelOutputs'] ?? [] as $out) {
+    if (($out['type'] ?? '') !== 'PCA9685') continue;
+    foreach ($out['ports'] ?? [] as $port_idx => $port) {
         $desc  = trim($port['description'] ?? '');
-        $label = $prefix . "Port $port_idx" . ($desc !== '' ? " — $desc" : '');
-        $servo_ports[] = ['value' => $port_idx, 'label' => $label, 'out' => $out_idx];
+        $servo_ports[] = ['value' => count($servo_ports), 'native' => null,
+                          'label' => "PWM tab · Port $port_idx" . ($desc !== '' ? " — $desc" : '')];
+    }
+    break;
+}
+$cp = @json_decode(@file_get_contents('http://localhost/api/channel/output/co-pwm', false, $fpp_ctx), true) ?? [];
+foreach ($cp['channelOutputs'] ?? [] as $out) {
+    if (empty($out['enabled'])) continue;
+    $cape = $out['subType'] ?? $out['type'] ?? 'Servos tab';
+    foreach ($out['outputs'] ?? [] as $port_idx => $port) {
+        if (($port['type'] ?? '') !== 'Servo' || ($port['dataType'] ?? 'Scaled') !== 'Scaled') continue;
+        $desc = trim($port['description'] ?? '');
+        $min  = (float)($port['min'] ?? 1000);
+        $max  = (float)($port['max'] ?? 2000);
+        // fpp-servo-calibrator's saved center (µs); fppd itself ignores it.
+        $ctr  = (float)($port['_scCenter'] ?? $port['center'] ?? ($min + $max) / 2);
+        $servo_ports[] = [
+            'value'  => count($servo_ports),
+            'native' => [$min, $max, $ctr],
+            'label'  => "$cape · Port $port_idx" . ($desc !== '' ? " — $desc" : '')
+                      . ' (ch ' . ((int)($port['startChannel'] ?? 0) + 1) . ')',
+        ];
     }
 }
 
@@ -332,16 +355,17 @@ $hide = fn(bool $hidden) => $hidden ? ' d-none' : '';
       <label class="col-md-3 col-form-label" for="cfg-channel_<?= $axis ?>"><?= $axis_label ?></label>
       <div class="col-md-9">
         <?php if ($servo_ports): ?>
-        <select class="form-select" id="cfg-channel_<?= $axis ?>">
+        <select class="form-select" id="cfg-channel_<?= $axis ?>" onchange="onChannelChange('<?= $axis ?>', this)">
           <?php foreach ($servo_ports as $p):
-            $sel = ($cur_ch === (int)$p['value']) ? 'selected' : '';
+            $sel    = ($cur_ch === (int)$p['value']) ? 'selected' : '';
+            $native = $p['native'] ? ' data-native="' . htmlspecialchars(json_encode($p['native'])) . '"' : '';
           ?>
-            <option value="<?= (int)$p['value'] ?>" <?= $sel ?>><?= htmlspecialchars($p['label']) ?></option>
+            <option value="<?= (int)$p['value'] ?>" <?= $sel ?><?= $native ?>><?= htmlspecialchars($p['label']) ?></option>
           <?php endforeach; ?>
         </select>
         <?php else: ?>
         <input class="form-control" id="cfg-channel_<?= $axis ?>" type="number" value="<?= $cur_ch ?>">
-        <div class="form-text">No servo outputs found on FPP's PWM tab (co-other)</div>
+        <div class="form-text">No servo outputs found on FPP's PWM tab or Servos tab</div>
         <?php endif; ?>
       </div>
     </div>
@@ -493,6 +517,18 @@ function onModeChange(val) {
   show('mode-desc-' + val, true);
   show('row-motion',     val === 'motion_sensor');
   show('row-seq-follow', val === 'sequence_follow');
+}
+
+// Servos-tab ports map 0–180° across the port's calibrated min..max, so pick
+// the full range and put Center where the calibrator's center pulse is.
+function onChannelChange(axis, sel) {
+  const native = sel.selectedOptions[0]?.dataset.native;
+  if (!native) return;
+  const [min, max, center] = JSON.parse(native);
+  const angle = max > min ? (center - min) / (max - min) * 180 : 90;
+  document.getElementById(`cfg-servo_${axis}_min`).value    = 0;
+  document.getElementById(`cfg-servo_${axis}_max`).value    = 180;
+  document.getElementById(`cfg-servo_${axis}_center`).value = Math.round(angle * 2) / 2;
 }
 
 function onHwTypeChange(val) {

@@ -62,6 +62,14 @@ Configure the mode and all servo settings from the plugin page in the FPP UI.
 ## Hardware
 
 - Raspberry Pi running FPP (tested on FPP v6+)
-- PCA9685 PWM board connected via I2C
+- Servos driven by FPP, either:
+  - a PCA9685 add-on board configured on FPP's **PWM** tab, or
+  - a native servo cape (e.g. Kulp K2-Pi-Servo) configured on FPP's **Servos** tab
 - USB or CSI camera
-- Pan/tilt servo assembly connected to PCA9685 channels 0 (pan) and 1 (tilt) by default
+- Pan/tilt servo assembly; pick the Pan and Tilt ports on the plugin page
+
+Ports on the **Servos** tab must use the *Scaled* data type. For those ports,
+0–180° covers the port's full Min–Max range, and picking one fills in the
+center from [fpp-servo-calibrator](https://github.com/pgianotto/fpp-servo-calibrator)
+if you've calibrated it. With a native cape, don't also add a PCA9685 row on
+the PWM tab for the same chip: two drivers on one chip make the servos stutter.

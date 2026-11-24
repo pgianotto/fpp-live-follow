@@ -187,6 +187,7 @@ def _save_cfg(cfg: dict):
     CFG_PATH.write_text(json.dumps(cfg, indent=2))
 
 _CO_OTHER_API = 'http://localhost/api/channel/output/co-other'
+_CO_PWM_API   = 'http://localhost/api/channel/output/co-pwm'
 
 
 def _fetch_co_other_cfg() -> dict:
@@ -197,33 +198,112 @@ def _fetch_co_other_cfg() -> dict:
         return json.loads(resp.read())
 
 
+def _fetch_co_pwm_cfg() -> dict:
+    """Read the Servos-tab (native PWM cape, e.g. K2-Pi-Servo) config."""
+    with urllib.request.urlopen(_CO_PWM_API, timeout=3) as resp:
+        return json.loads(resp.read())
+
+
 # ── FPP overlay servo backend ─────────────────────────────────────────────────
 
-def _read_pca9685_port_configs() -> list:
-    """Turn the co-other config into a per-port config list for FppOverlayServoBackend."""
+def _fpp_center(p: dict, min_us: float, max_us: float) -> float:
+    # fppd's own rule (PCA9685.cpp loadPortConfig): "center" if present, else
+    # the integer midpoint.  fpp-servo-calibrator's _scCenter is NOT used by
+    # fppd, so it must not be used for encoding either.
+    if 'center' in p:
+        return float(p['center'])
+    return float((int(min_us) + int(max_us)) // 2)
+
+
+def _read_servo_port_configs() -> list:
+    """Build the port list for FppOverlayServoBackend.
+
+    Order (indices are what channel_pan / channel_tilt store, and content.php
+    builds the same list):
+      1. every port of the first PCA9685 output on the PWM tab (co-other),
+         so existing configs keep their indices;
+      2. every Scaled Servo port of enabled Servos-tab outputs (co-pwm).
+    """
+    result = []
     try:
         cfg = _fetch_co_other_cfg()
         for out in cfg.get('channelOutputs', []):
             if out.get('type') != 'PCA9685':
                 continue
-            sc    = out.get('startChannel', 1)
-            ports = out.get('ports', [])
-            result = []
-            for p in ports:
+            sc = out.get('startChannel', 1)
+            for p in out.get('ports', []):
+                # co-other dataType: 0/1 Scaled 8-bit, 2/3 Scaled 16-bit
+                # (odd = reversed by fppd), 4/5 Absolute 8/16-bit.
                 dt       = p.get('dataType', 0)
                 is_16bit = dt in (2, 3, 5)
+                min_us   = float(p.get('min', 1000))
+                max_us   = float(p.get('max', 2000))
                 result.append({
+                    'source':            'co-other',
                     'fpp_start_channel': sc,
                     'is_16bit':   is_16bit,
-                    'min_us':     float(p.get('min',    1000)),
-                    'center_us':  float(p.get('center', 1500)),
-                    'max_us':     float(p.get('max',    2000)),
+                    'scaled':     dt in (0, 1, 2, 3),
+                    'min_us':     min_us,
+                    'center_us':  _fpp_center(p, min_us, max_us),
+                    'max_us':     max_us,
+                    # Historical angle mapping for PWM-tab ports; kept so
+                    # existing min/max/center angle settings don't shift.
+                    'angle_lo_us': 1000.0,
+                    'angle_hi_us': 2000.0,
                 })
                 sc += 2 if is_16bit else 1
-            return result
+            break
     except Exception as exc:
-        print(f'[LiveFollow] Could not read PCA9685 port configs: {exc}')
-    return []
+        print(f'[LiveFollow] Could not read PWM-tab (co-other) ports: {exc}')
+
+    try:
+        cfg = _fetch_co_pwm_cfg()
+        for out in cfg.get('channelOutputs', []):
+            if not out.get('enabled', 0):
+                continue
+            for p in out.get('outputs', []):
+                if p.get('type') != 'Servo' or p.get('dataType', 'Scaled') != 'Scaled':
+                    continue
+                min_us = float(p.get('min', 1000))
+                max_us = float(p.get('max', 2000))
+                result.append({
+                    'source':            'co-pwm',
+                    # co-pwm stores startChannel 0-based; the overlay API is 1-based.
+                    'fpp_start_channel': int(p.get('startChannel', 0)) + 1,
+                    'is_16bit':   bool(p.get('is16bit', 0)),
+                    'scaled':     True,
+                    'min_us':     min_us,
+                    'center_us':  _fpp_center(p, min_us, max_us),
+                    'max_us':     max_us,
+                    # 0–180° spans the port's calibrated range, so the whole
+                    # range set on the Servos tab / in the calibrator is reachable.
+                    'angle_lo_us': min_us,
+                    'angle_hi_us': max_us,
+                })
+    except Exception as exc:
+        print(f'[LiveFollow] Could not read Servos-tab (co-pwm) ports: {exc}')
+    return result
+
+
+def _pulse_to_fpp_scaled(pulse_us: float, min_us: float, center_us: float,
+                         max_us: float, is_16bit: bool) -> int:
+    """Exact inverse of fppd's Scaled decode (PCA9685Port::readValue).
+
+    16-bit: val >= 32768 → center + (val-32768) * (max-center+1) / 32768
+            val <  32768 → min    +  val        * (center-min+1) / 32767
+     8-bit: same with 128 / 128.  0 is reserved for the zero behavior.
+    """
+    half  = 32768 if is_16bit else 128
+    below = 32767 if is_16bit else 128
+    top   = 65535 if is_16bit else 255
+    pulse_us = max(min_us, min(max_us, pulse_us))
+    if pulse_us >= center_us:
+        val = half + round((pulse_us - center_us) * half /
+                           max(1.0, max_us - center_us + 1))
+    else:
+        val = round((pulse_us - min_us) * below /
+                    max(1.0, center_us - min_us + 1))
+    return max(1, min(top, val))
 
 
 class FppOverlayServoBackend(ServoBackend):
@@ -244,6 +324,11 @@ class FppOverlayServoBackend(ServoBackend):
         self._ports = port_configs
         self._conn: http.client.HTTPConnection = None
         self._lock = threading.Lock()
+        # Last byte written per overlay channel.  Only changed bytes are sent:
+        # it halves the HTTP traffic and, since fppd can output a frame between
+        # the high- and low-byte PUTs, avoids most torn 16-bit values (jitter).
+        self._last: dict = {}
+        self._warned_unsupported: set = set()
 
     # ── HTTP helper ───────────────────────────────────────────────────────────
 
@@ -269,41 +354,36 @@ class FppOverlayServoBackend(ServoBackend):
     # ── Angle → FPP scaled value ──────────────────────────────────────────────
 
     def _angle_to_fpp_val(self, angle: float, port: dict) -> int:
-        pulse_us  = 1000.0 + (float(angle) / 180.0) * 1000.0
-        min_us    = port['min_us']
-        center_us = port['center_us']
-        max_us    = port['max_us']
-        if port['is_16bit']:
-            if pulse_us <= center_us:
-                val = round((pulse_us - min_us) / (center_us - min_us) * 32767)
-            else:
-                val = 32768 + round((pulse_us - center_us) /
-                                    (max_us - center_us) * 32767)
-            return max(1, min(65535, val))
-        else:
-            if pulse_us <= center_us:
-                val = round((pulse_us - min_us) / (center_us - min_us) * 127)
-            else:
-                val = 128 + round((pulse_us - center_us) /
-                                  (max_us - center_us) * 127)
-            return max(1, min(255, val))
+        lo, hi   = port['angle_lo_us'], port['angle_hi_us']
+        pulse_us = lo + (float(angle) / 180.0) * (hi - lo)
+        return _pulse_to_fpp_scaled(pulse_us, port['min_us'], port['center_us'],
+                                    port['max_us'], port['is_16bit'])
+
+    def _put_byte(self, fpp_ch: int, value: int):
+        if self._last.get(fpp_ch) == value:
+            return
+        self._last[fpp_ch] = value
+        self._put(f'/overlays/range/{fpp_ch}', f'{{"Value": {value}}}')
 
     # ── ServoBackend interface ────────────────────────────────────────────────
 
     def set_angle(self, channel: int, angle: float):
         if channel >= len(self._ports):
             return
-        port    = self._ports[channel]
+        port = self._ports[channel]
+        if not port['scaled']:
+            if channel not in self._warned_unsupported:
+                self._warned_unsupported.add(channel)
+                print(f'[LiveFollow] WARNING: port {channel} uses an Absolute data '
+                      'type; only Scaled ports are supported. Not moving it.')
+            return
         fpp_val = self._angle_to_fpp_val(angle, port)
         fpp_ch  = port['fpp_start_channel']
         if port['is_16bit']:
-            self._put(f'/overlays/range/{fpp_ch}',
-                      f'{{"Value": {(fpp_val >> 8) & 0xFF}}}')
-            self._put(f'/overlays/range/{fpp_ch + 1}',
-                      f'{{"Value": {fpp_val & 0xFF}}}')
+            self._put_byte(fpp_ch,     (fpp_val >> 8) & 0xFF)
+            self._put_byte(fpp_ch + 1, fpp_val & 0xFF)
         else:
-            self._put(f'/overlays/range/{fpp_ch}',
-                      f'{{"Value": {fpp_val}}}')
+            self._put_byte(fpp_ch, fpp_val)
 
     def delete_channels(self, pca9685_channels: list):
         """Remove overlay overrides for the given PCA9685 port numbers."""
@@ -312,8 +392,10 @@ class FppOverlayServoBackend(ServoBackend):
                 continue
             port   = self._ports[ch]
             fpp_ch = port['fpp_start_channel']
+            self._last.pop(fpp_ch, None)
             self._put(f'/overlays/range/{fpp_ch}', '{"delete": true}')
             if port['is_16bit']:
+                self._last.pop(fpp_ch + 1, None)
                 self._put(f'/overlays/range/{fpp_ch + 1}', '{"delete": true}')
 
     def close(self):
@@ -328,24 +410,37 @@ class FppOverlayServoBackend(ServoBackend):
 
 # ── FPP output check ──────────────────────────────────────────────────────────
 
-def _warn_if_fpp_pca9685_disabled():
-    """Log a warning if FPP's PCA9685 output is disabled — never change it.
+def _check_fpp_servo_outputs():
+    """Log warnings about FPP's servo outputs — never change them.
 
-    The output's on/off state belongs to the user (and to fpp-servo-calibrator,
-    which disables it while active and re-enables it itself, including after
-    its own crash). Re-enabling it here overrode outputs the user disabled on
-    purpose, e.g. a PWM-tab row that would fight a native servo cape for the
-    same chip (fpp-live-follow#3).
+    The outputs' on/off state belongs to the user (and to fpp-servo-calibrator,
+    which disables the PWM-tab PCA9685 while active and re-enables it itself,
+    including after its own crash). Re-enabling it here overrode outputs the
+    user disabled on purpose (fpp-live-follow#3).
     """
     try:
-        cfg = _fetch_co_other_cfg()
-        for out in cfg.get('channelOutputs', []):
-            if out.get('type') == 'PCA9685' and not out.get('enabled', 1):
-                print('[LiveFollow] WARNING: FPP PCA9685 output is disabled — '
-                      'servos will not move until it is enabled on the PWM tab.')
-                return
+        pca_rows = [o for o in _fetch_co_other_cfg().get('channelOutputs', [])
+                    if o.get('type') == 'PCA9685']
     except Exception:
-        pass
+        pca_rows = []
+    try:
+        native = [o for o in _fetch_co_pwm_cfg().get('channelOutputs', [])
+                  if o.get('enabled', 0)
+                  and any(p.get('type') == 'Servo' for p in o.get('outputs', []))]
+    except Exception:
+        native = []
+
+    if native and any(o.get('enabled', 1) for o in pca_rows):
+        # A PWM-tab PCA9685 row next to a native servo cape usually points at
+        # the cape's own chip (K2-Pi-Servo: 0x40).  Two fppd drivers then
+        # rewrite the same PCA9685 at different frequencies → servo stutter.
+        print('[LiveFollow] WARNING: a PCA9685 output is enabled on the PWM tab '
+              'while a native servo cape is configured on the Servos tab. If both '
+              'drive the same chip the servos will stutter — disable the PWM-tab '
+              'row; Live Follow uses the Servos-tab ports directly.')
+    elif pca_rows and not native and not pca_rows[0].get('enabled', 1):
+        print('[LiveFollow] WARNING: FPP PCA9685 output is disabled — '
+              'servos will not move until it is enabled on the PWM tab.')
 
 
 # ── Tracking config builder ───────────────────────────────────────────────────
@@ -412,7 +507,7 @@ class LiveFollowDaemon:
         self._overlay_last_seen = 0.0
 
         if self.cfg.get('hardware_type') == 'fpp_overlay':
-            _warn_if_fpp_pca9685_disabled()
+            _check_fpp_servo_outputs()
 
         self._fpp_poll_running = False
         self._poll_generation  = 0   # incremented on reload to stop stale threads
@@ -429,11 +524,11 @@ class LiveFollowDaemon:
         hw_type = hw.get('type', 'mock')
 
         if hw_type == 'fpp_overlay':
-            port_configs = _read_pca9685_port_configs()
+            port_configs = _read_servo_port_configs()
             if port_configs:
                 backend = FppOverlayServoBackend(port_configs)
             else:
-                print('[LiveFollow] No PCA9685 port configs found; using mock backend.')
+                print('[LiveFollow] No servo ports found on the PWM or Servos tab; using mock backend.')
                 from core.servo_controller import MockServoBackend
                 backend = MockServoBackend()
         else:
@@ -678,7 +773,7 @@ class LiveFollowDaemon:
         time.sleep(0.2)
         self._stop_components()
         if self.cfg.get('hardware_type') == 'fpp_overlay':
-            _warn_if_fpp_pca9685_disabled()
+            _check_fpp_servo_outputs()
         self._sequence_playing = False
         self._follow_active    = False
         self._body_last_seen   = 0.0
